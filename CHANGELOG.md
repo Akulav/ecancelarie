@@ -2,6 +2,18 @@
 
 Modificările importante din e-Management ANSC. Versiunile urmează [Semantic Versioning](https://semver.org/).
 
+## [Nelansat]
+
+### Adăugat
+- Server MCP pentru asistenții AI (`/api/mcp`): căutarea și citirea documentelor (inclusiv textul din Word, Excel,
+  PowerPoint și OpenDocument), verificarea semnăturilor, adăugarea și modificarea documentelor, retrimiterea
+  notificărilor. Asistentul lucrează în numele unui angajat, cu drepturile acestuia, printr-un jeton personal
+  creat din butonul „Asistent AI”. Accesul este oprit implicit și se pornește din Setări; acțiunile apar în jurnal
+  cu mențiunea `[AI: …]`.
+
+### Securitate
+- Schimbarea sau resetarea parolei și dezactivarea contului revocă jetoanele AI ale persoanei.
+
 ## [1.0.2] - 2026-11-21
 
 ### Securitate

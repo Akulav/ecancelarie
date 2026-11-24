@@ -2564,6 +2564,22 @@ const SettingsView = {
             <button class="btn primary" :disabled="busy">Salvează setările</button>
           </div>
         </form>
+        <form v-if="f" class="card panel" @submit.prevent="save">
+          <div class="panel-head">
+            <h2>Asistenți AI (MCP)</h2>
+            <span class="pill" :class="f.mcp_enabled ? 'green' : 'gray'">{{ f.mcp_enabled ? 'Permis' : 'Oprit' }}</span>
+          </div>
+          <p class="muted small">
+            Angajații își pot crea, din butonul „Asistent AI”, jetoane personale cu care un asistent compatibil MCP (de ex. Claude)
+            caută, citește și, dacă permit, adaugă sau modifică documente în numele lor, cu aceleași drepturi.
+            Asistentul nu poate semna, șterge documente sau administra conturi; acțiunile lui apar în jurnal cu mențiunea [AI].
+            Oprirea blochează imediat toate jetoanele.
+          </p>
+          <label class="check"><input type="checkbox" v-model="f.mcp_enabled" /> Permite accesul asistenților AI</label>
+          <div class="panel-foot">
+            <button class="btn primary" :disabled="busy">Salvează setările</button>
+          </div>
+        </form>
         <div class="settings-col"><BackupView /></div>
       </div>
     </div>`,
@@ -2775,10 +2791,121 @@ const PeopleView = {
     <AbsenceForm v-if="absenceOf" :user="absenceOf" @close="absenceOf = null" />`,
 };
 
+// ---------- asistenți AI (MCP) ----------
+// Jetoanele personale cu care un asistent AI (Claude sau alt client MCP) lucrează în numele utilizatorului.
+// Jetonul se vede o singură dată, la creare; administratorul vede și poate revoca jetoanele tuturor.
+const AiTokens = {
+  components: { Modal },
+  emits: ['close'],
+  data: () => ({ info: null, form: { name: '', days: 90, can_write: false }, created: null, busy: false }),
+  computed: {
+    store: () => store,
+    canWriteDocs: () => store.me.role !== 'user',
+    // configurația pentru Claude Code / clienții MCP care acceptă antete HTTP
+    snippet() {
+      if (!this.created) return '';
+      return JSON.stringify({ mcpServers: { 'e-management-ansc': { type: 'http', url: this.created.url, headers: { Authorization: 'Bearer ' + this.created.token } } } }, null, 2);
+    },
+    others() {
+      return (this.info && this.info.all ? this.info.all : []).filter((t) => !this.info.tokens.some((m) => m.id === t.id));
+    },
+  },
+  async mounted() {
+    await this.load();
+  },
+  methods: {
+    fmtDateTime,
+    fmtDay,
+    async load() {
+      await run(async () => (this.info = await api('/api/tokens')));
+    },
+    async create() {
+      if (this.created) return this.$emit('close');
+      this.busy = true;
+      await run(async () => {
+        this.created = await api('/api/tokens', { method: 'POST', body: { name: this.form.name, days: Number(this.form.days), can_write: this.form.can_write } });
+        this.form.name = '';
+        await this.load();
+      });
+      this.busy = false;
+    },
+    async revoke(t) {
+      const ok = await ask({ title: 'Revocă jetonul', message: `Asistentul care folosește „${t.name}” nu va mai avea acces. Continuați?`, okLabel: 'Revocă', danger: true });
+      if (ok) await run(async () => (await api('/api/tokens/' + t.id, { method: 'DELETE' }), await this.load()), 'Jetonul a fost revocat.');
+    },
+    async copy(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Copiat.');
+      } catch {
+        toast('Copierea nu este permisă de browser; selectați textul și copiați-l manual.', true);
+      }
+    },
+  },
+  template: /*html*/ `
+    <Modal title="Asistent AI (MCP)" wide :busy="busy" :ok-label="created ? 'Gata' : 'Creează jetonul'" busy-label="Se creează…" :cancel-label="created ? '' : 'Închide'" @close="$emit('close')" @submit="create">
+      <div v-if="!info" class="boot-panel"><span class="spinner"></span></div>
+      <template v-else>
+        <p class="muted small">
+          Un asistent AI compatibil MCP (de ex. Claude) poate căuta și citi documentele dvs.<template v-if="canWriteDocs">, adăuga sau modifica documente</template>
+          în numele dvs., cu exact aceleași drepturi. Nu poate semna, șterge documente sau schimba setări. Fiecare acțiune apare în jurnal.
+          Schimbarea parolei revocă toate jetoanele.
+        </p>
+        <p v-if="!info.enabled" class="warn">Accesul asistenților AI este oprit. Administratorul îl poate porni în pagina „Setări”.</p>
+        <template v-if="created">
+          <p><b>Jetonul a fost creat.</b> Copiați-l acum: nu va mai fi afișat.</p>
+          <div class="addrow"><input :value="created.token" readonly aria-label="Jetonul" spellcheck="false" @focus="$event.target.select()" /><button type="button" class="btn" @click="copy(created.token)">Copiază</button></div>
+          <p class="muted small mt10">Adresa serverului MCP: <code class="uname">{{ created.url }}</code>. Pentru Claude Code (fișierul <code class="uname">.mcp.json</code>) sau alt client care acceptă antete:</p>
+          <textarea class="mono-box" rows="11" readonly :value="snippet" @focus="$event.target.select()"></textarea>
+          <button type="button" class="btn sm mt4" @click="copy(snippet)">Copiază configurația</button>
+        </template>
+        <template v-else-if="info.enabled">
+          <div class="row">
+            <label class="field grow2"><span>Numele jetonului</span><input v-model="form.name" maxlength="80" placeholder="ex. Claude pe laptopul de serviciu" required /></label>
+            <label class="field"><span>Valabil</span>
+              <select v-model="form.days"><option :value="7">7 zile</option><option :value="30">30 de zile</option><option :value="90">90 de zile</option><option :value="365">un an</option></select>
+            </label>
+          </div>
+          <label class="check pull-up"><input type="checkbox" v-model="form.can_write" />
+            {{ canWriteDocs ? 'Permite modificări (adăugare și modificare de documente, notificări)' : 'Permite marcarea documentelor ca văzute' }}</label>
+        </template>
+        <h3 class="section-title spaced">Jetoanele mele</h3>
+        <table>
+          <thead><tr><th>Nume</th><th>Drepturi</th><th>Folosit ultima dată</th><th>Expiră</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="t in info.tokens" :key="t.id">
+              <td><b>{{ t.name }}</b></td>
+              <td><span class="pill" :class="t.can_write ? 'amber' : 'gray'">{{ t.can_write ? 'citire și modificare' : 'doar citire' }}</span></td>
+              <td class="muted small">{{ t.last_used_at ? fmtDateTime(t.last_used_at) : 'niciodată' }}</td>
+              <td class="muted small nowrap">{{ fmtDay(t.expires_at.slice(0, 10)) }}</td>
+              <td class="row-actions"><button type="button" class="btn sm" @click="revoke(t)">Revocă</button></td>
+            </tr>
+            <tr v-if="!info.tokens.length"><td colspan="5" class="empty-row">Nu aveți jetoane active.</td></tr>
+          </tbody>
+        </table>
+        <template v-if="others.length">
+          <h3 class="section-title spaced">Jetoanele celorlalți angajați</h3>
+          <table>
+            <thead><tr><th>Angajat</th><th>Nume</th><th>Drepturi</th><th>Folosit ultima dată</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="t in others" :key="t.id">
+                <td>{{ t.full_name }}</td>
+                <td><b>{{ t.name }}</b></td>
+                <td><span class="pill" :class="t.can_write ? 'amber' : 'gray'">{{ t.can_write ? 'citire și modificare' : 'doar citire' }}</span></td>
+                <td class="muted small">{{ t.last_used_at ? fmtDateTime(t.last_used_at) : 'niciodată' }}</td>
+                <td class="row-actions"><button type="button" class="btn sm" @click="revoke(t)">Revocă</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </template>
+    </Modal>`,
+};
+
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor },
-  data: () => ({ pass: null, passBusy: false, bump: false }),
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens },
+  data: () => ({ pass: null, passBusy: false, bump: false, ai: false }),
   computed: {
     store: () => store,
     inbox: inboxCount,
@@ -2857,12 +2984,14 @@ const App = {
                 <span v-if="inbox" class="mailbox-count">{{ inbox > 99 ? '99+' : inbox }}</span>
               </a>
               <span class="name">{{ store.me.full_name }}</span>
+              <button class="btn sm" title="Acces pentru asistenți AI (MCP)" @click="ai = true">Asistent AI</button>
               <button class="btn sm" @click="pass = { current: '', next: '', again: '' }">Parolă</button>
               <button class="btn sm" @click="logout">Ieșire</button>
             </div>
           </div>
         </header>
         <main class="page" :class="pageClass"><component :is="view" /></main>
+        <AiTokens v-if="ai" @close="ai = false" />
         <Modal v-if="pass" title="Schimbă parola" :busy="passBusy" @close="pass = null" @submit="savePass"><PasswordFields v-model="pass" /></Modal>
         <OfficeEditor v-if="store.editor" :key="store.editor.fileId" :file-id="store.editor.fileId" @close="store.editor = null" />
       </template>

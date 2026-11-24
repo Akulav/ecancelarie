@@ -197,6 +197,7 @@ async function importArchive(input) {
     tx(() => {
       db.exec('PRAGMA defer_foreign_keys = ON');
       db.exec('DELETE FROM sessions');
+      db.exec('DELETE FROM api_tokens');
       for (const t of [...TABLES].reverse()) db.exec(`DELETE FROM ${t}`);
       for (const t of TABLES) {
         const rows = data.tables[t] || [];

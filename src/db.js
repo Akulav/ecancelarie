@@ -142,6 +142,18 @@ CREATE TABLE IF NOT EXISTS absences (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_absences_user ON absences(user_id, to_date);
+-- jetoane de acces pentru asistenții AI (MCP): fiecare acționează în numele utilizatorului care l-a creat,
+-- cu aceleași drepturi; se păstrează doar amprenta (sha256), iar jetonul însuși este afișat o singură dată
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  can_write INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  last_used_at TEXT
+);
 `);
 
 // Bazele de date create de versiunile de dinainte de 1.0.1 nu au toate coloanele de mai sus și nu se mai

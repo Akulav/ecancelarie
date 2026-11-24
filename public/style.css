@@ -282,6 +282,8 @@ tr.off td { color: var(--muted); }
 .tagrow .icon-btn { opacity: .55; }
 .tagrow:hover .icon-btn, .tagrow .icon-btn:focus-visible { opacity: 1; }
 .addrow { display: flex; gap: 8px; margin-top: 10px; }
+.addrow input { flex: 1; min-width: 0; }
+.mono-box { width: 100%; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; resize: vertical; }
 
 /* ferestre modale și notificări */
 .overlay { position: fixed; inset: 0; background: rgba(16,24,40,.45); display: grid; place-items: start center; padding: 40px 16px; overflow: auto; z-index: 50; }

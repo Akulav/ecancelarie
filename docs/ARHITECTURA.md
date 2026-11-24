@@ -30,6 +30,7 @@ flowchart LR
 | `src/backup.js` | Exportul și importul complet `.anscbackup` |
 | `src/mail.js` | Notificările prin e-mail (setările SMTP stau în baza de date) |
 | `src/office.js` | Editarea în pagină prin ONLYOFFICE Docs |
+| `src/mcp.js` | Serverul MCP pentru asistenții AI (`POST /api/mcp`) |
 | `src/pdfsig.js` | Verificarea semnăturilor PDF (PAdES / CMS), pe server și fără rețea |
 | `src/ancore-md.pem` | Certificatele publice ale autorităților de certificare din Republica Moldova, pentru `pdfsig.js` |
 | `public/` | Interfața: `index.html`, `app.js`, `style.css`, iconițele |
@@ -69,6 +70,17 @@ poată rula cod în pagină. Versiunile anterioare ale unui fișier editat se p�
 Cu un server ONLYOFFICE Docs în rețeaua internă, `office.js` construiește configurația semnată (JWT) pentru editor,
 îi dă serverului de documente un link temporar spre fișier și primește înapoi versiunea salvată. Cine deschide
 primul documentul îl poate edita; ceilalți îl văd doar pentru citire până când blocarea se eliberează.
+
+## Asistenți AI (MCP)
+
+`mcp.js` implementează MCP în transportul „Streamable HTTP” fără stare: fiecare `POST /api/mcp` conține o cerere
+JSON-RPC și primește un răspuns JSON (fără SSE, fără sesiuni). Autentificarea (`requireToken`) folosește jetoane
+personale din tabela `api_tokens` (doar hash-ul, ca la sesiuni), cu termen de valabilitate și dreptul „doar citire”
+sau „citire și modificare”. Jetonul setează `req.user` la titularul lui, deci instrumentele trec prin aceleași
+reguli: `accessClause` / `listDocuments` la citire, `readDoc` + `createDocument` / `updateDocument` (comune cu
+formularul din pagină) la scriere. `audit()` adaugă `[AI: <jeton>]` la fiecare acțiune. Accesul este oprit până
+când administratorul îl pornește (setarea `mcp_enabled`); oprirea, revocarea, schimbarea parolei și dezactivarea
+contului blochează imediat jetoanele. Jetoanele nu se exportă în backup și se șterg la import.
 
 ## Copii de rezervă
 

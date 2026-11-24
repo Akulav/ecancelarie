@@ -23,6 +23,8 @@ npm start          # http://localhost:3080 (HOST defaults to 0.0.0.0)
 - `src/server.js` — Fastify app: auth (sessions in SQLite, cookie `sid`, hashed tokens), roles, all `/api/*` routes,
   uploads, signing chain, backup import/export, security headers / CSP
 - `src/db.js` — schema and migrations; `src/backup.js` — `.anscbackup` export/import; `src/mail.js` — SMTP
+- `src/mcp.js` — MCP server for AI assistants (`POST /api/mcp`, personal bearer tokens in `api_tokens`, acting as
+  the token's owner; tools must reuse `accessClause` / `listDocuments` / `readDoc` / `createDocument` / `updateDocument`)
 - `public/` — Vue 3 frontend served as static files (`app.js`, `style.css`, `index.html`); Vue is served from
   `node_modules` at `/vendor/vue.js`
 

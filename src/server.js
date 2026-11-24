@@ -140,7 +140,9 @@ const AUDIT_RETENTION_DAYS = 90;
 const auditInsert = db.prepare('INSERT INTO audit_log (username, ip, action, details) VALUES (?, ?, ?, ?)');
 function audit(req, action, details = '', username) {
   try {
-    auditInsert.run(username || req.user?.username || '', req.ip || '', action, String(details).slice(0, 500));
+    // acțiunile făcute de un asistent AI (MCP) poartă și numele jetonului folosit
+    const via = req.viaToken ? ` [AI: ${req.viaToken}]` : '';
+    auditInsert.run(username || req.user?.username || '', req.ip || '', action, (String(details).slice(0, 480) + via).slice(0, 500));
   } catch (e) {
     req.log.error(e);
   }
@@ -399,6 +401,57 @@ async function notifySigners(req, docId, userIds) {
   return mail.sendSignRequests(doc, userIds.map((id) => q.get(id)).filter(Boolean), `${req.protocol}://${req.host}`);
 }
 
+// Creează / modifică un document deja validat (readDoc), cu fișierele deja scrise pe disc. Folosite de
+// formularul din pagină și de asistenții AI (src/mcp.js); verificarea drepturilor rămâne la apelant.
+async function createDocument(req, doc, saved) {
+  let id;
+  try {
+    id = tx(() => {
+      const r = db
+        .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, req.user.id);
+      saveDocLinks(lastId(r), doc, saved);
+      return lastId(r);
+    });
+  } catch (e) {
+    removeStored(saved.map((f) => f.stored));
+    throw e;
+  }
+  // după salvare fișierele aparțin documentului: o eroare la e-mail nu trebuie să le mai șteargă
+  audit(req, 'document adăugat', `#${id} ${doc.title}`);
+  return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
+}
+async function updateDocument(req, id, doc, saved) {
+  const removed = [];
+  const turnBefore = currentSigner(id);
+  try {
+    tx(() => {
+      db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, review_until = ?, updated_at = datetime('now') WHERE id = ?").run(
+        doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, id
+      );
+      // versiunile semnate fac parte din lanțul de semnare și nu pot fi eliminate la editare
+      const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ? AND signed_by_name IS NULL');
+      const del = db.prepare('DELETE FROM document_files WHERE id = ? AND document_id = ?');
+      for (const fid of doc.removeFileIds) {
+        const f = q.get(fid, id);
+        if (f) {
+          removed.push(f.stored, ...versionsStored(fid));
+          del.run(fid, id);
+        }
+      }
+      saveDocLinks(id, doc, saved);
+    });
+  } catch (e) {
+    removeStored(saved.map((f) => f.stored));
+    throw e;
+  }
+  removeStored(removed);
+  audit(req, 'document modificat', `#${id} ${doc.title}`);
+  // e-mail doar dacă s-a schimbat persoana care este acum la rând
+  const turn = currentSigner(id);
+  return { ok: true, mail: turn !== turnBefore ? await notifySigners(req, id, [turn]) : null };
+}
+
 // Grupează rândurile după document; elimină coloana document_id din fiecare rând.
 function byDocument(rows, pick = (r) => r) {
   const map = new Map();
@@ -411,7 +464,7 @@ function byDocument(rows, pick = (r) => r) {
 
 // Lista completă se citește cu câte o singură interogare pe tabel (nu câte cinci pentru fiecare document),
 // ca pagina să rămână rapidă și cu mii de documente.
-function listDocuments(user) {
+function listDocuments(user, onlyId = null) {
   const acc = accessClause(user);
   const rows = db
     .prepare(
@@ -419,10 +472,10 @@ function listDocuments(user) {
               a.full_name AS author,
               EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen
        FROM documents d LEFT JOIN users a ON a.id = d.created_by
-       WHERE ${acc.sql}
+       WHERE ${acc.sql}${onlyId ? ' AND d.id = ?' : ''}
        ORDER BY d.doc_date DESC, d.id DESC`
     )
-    .all(user.id, ...acc.params);
+    .all(user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
   if (!rows.length) return [];
   const away = absentToday();
   const signers = byDocument(
@@ -463,6 +516,10 @@ function accessibleDoc(user, id) {
   const acc = accessClause(user);
   return db.prepare(`SELECT d.id, d.created_by FROM documents d WHERE d.id = ? AND ${acc.sql}`).get(id, ...acc.params);
 }
+
+// Accesul asistenților AI (MCP, src/mcp.js) este oprit până când administratorul îl pornește în „Setări”.
+const mcpEnabled = () => db.prepare("SELECT value FROM settings WHERE key = 'mcp_enabled'").get()?.value === '1';
+const MAX_TOKENS_PER_USER = 10;
 
 const INLINE_TYPES = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 const isPdf = (name) => path.extname(name).toLowerCase() === '.pdf';
@@ -570,9 +627,57 @@ app.register(async (app) => {
     if (next === current) throw fail(400, 'Parola nouă trebuie să difere de cea curentă.');
     db.prepare('UPDATE users SET pass_hash = ?, must_change = 0 WHERE id = ?').run(hashPassword(next), req.user.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(req.user.id, sha(req.cookies.sid));
+    // parola schimbată (poate din cauza unei compromiteri): jetoanele AI create până acum se revocă
+    db.prepare('DELETE FROM api_tokens WHERE user_id = ?').run(req.user.id);
     // parola inițială generată la instalare nu mai este valabilă, deci fișierul cu ea dispare
     if (req.user.username === 'admin') fs.rm(INITIAL_PASSWORD_FILE, { force: true }, () => {});
     audit(req, 'parolă schimbată');
+    return { ok: true };
+  });
+
+  // --- jetoane de acces pentru asistenții AI (MCP) ---
+  // Fiecare utilizator își gestionează propriile jetoane; administratorul le vede pe toate și le poate revoca.
+  const tokenCols = 't.id, t.name, t.can_write, t.created_at, t.expires_at, t.last_used_at';
+  const mcpUrl = (req) => `${office.trimUrl(mail.getSettings().app_url || `${req.protocol}://${req.host}`)}/api/mcp`;
+  app.get('/api/tokens', { preHandler: requireUser }, async (req) => ({
+    enabled: mcpEnabled(),
+    url: mcpUrl(req),
+    tokens: db.prepare(`SELECT ${tokenCols} FROM api_tokens t WHERE t.user_id = ? AND t.expires_at > datetime('now') ORDER BY t.id DESC`).all(req.user.id),
+    all:
+      req.user.role === 'admin'
+        ? db
+            .prepare(`SELECT ${tokenCols}, u.full_name, u.username FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.expires_at > datetime('now') ORDER BY t.id DESC`)
+            .all()
+        : undefined,
+  }));
+  app.post('/api/tokens', { preHandler: requireUser }, async (req) => {
+    if (!mcpEnabled()) throw fail(403, 'Accesul asistenților AI este dezactivat de administrator.');
+    const name = str(req.body?.name, 80);
+    if (!name) throw fail(400, 'Dați jetonului un nume (ex. „Claude pe laptop”).');
+    const days = Number(req.body?.days) || 90;
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw fail(400, 'Valabilitatea este între 1 și 365 de zile.');
+    // un angajat fără drept de editare nu are ce modifica prin asistent (în afară de „văzut”)
+    const canWrite = req.body?.can_write === true ? 1 : 0;
+    db.prepare("DELETE FROM api_tokens WHERE expires_at <= datetime('now')").run();
+    if (db.prepare('SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?').get(req.user.id).n >= MAX_TOKENS_PER_USER) {
+      throw fail(400, `Cel mult ${MAX_TOKENS_PER_USER} jetoane active. Revocați unul înainte.`);
+    }
+    const token = 'ansc_' + crypto.randomBytes(32).toString('base64url');
+    const id = lastId(
+      db
+        .prepare("INSERT INTO api_tokens (user_id, name, token_hash, can_write, expires_at) VALUES (?, ?, ?, ?, datetime('now', ?))")
+        .run(req.user.id, name, sha(token), canWrite, `+${days} days`)
+    );
+    audit(req, 'jeton AI creat', `${name} (${canWrite ? 'citire și modificare' : 'doar citire'}, ${days} zile)`);
+    // jetonul se arată o singură dată; în baza de date rămâne doar amprenta lui
+    return { id, token, url: mcpUrl(req) };
+  });
+  app.delete('/api/tokens/:id', { preHandler: requireUser }, async (req) => {
+    const id = paramId(req);
+    const t = db.prepare('SELECT t.name, t.user_id, u.username FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.id = ?').get(id);
+    if (!t || (t.user_id !== req.user.id && req.user.role !== 'admin')) throw fail(404, 'Jetonul nu a fost găsit.');
+    db.prepare('DELETE FROM api_tokens WHERE id = ?').run(id);
+    audit(req, 'jeton AI revocat', t.user_id === req.user.id ? t.name : `${t.name} (al lui ${t.username})`);
     return { ok: true };
   });
 
@@ -796,7 +901,10 @@ app.register(async (app) => {
       );
       if (password) db.prepare('UPDATE users SET pass_hash = ?, must_change = 1 WHERE id = ?').run(hashPassword(password), id);
       // parolă resetată sau cont dezactivat: sesiunile vechi nu mai sunt valabile
-      if ((password && id !== req.user.id) || !u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+      if ((password && id !== req.user.id) || !u.active) {
+        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+        db.prepare('DELETE FROM api_tokens WHERE user_id = ?').run(id);
+      }
     });
     audit(req, 'utilizator modificat', `${u.username} (${u.role}${u.active ? '' : ', dezactivat'}${password ? ', parolă resetată' : ''})`);
     return { ok: true, blockedDocs: turns.length };
@@ -898,22 +1006,7 @@ app.register(async (app) => {
 
   app.post('/api/documents', { preHandler: requireEditor }, async (req) => {
     const { doc, saved } = await readDocForm(req);
-    let id;
-    try {
-      id = tx(() => {
-        const r = db
-          .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, req.user.id);
-        saveDocLinks(lastId(r), doc, saved);
-        return lastId(r);
-      });
-    } catch (e) {
-      removeStored(saved.map((f) => f.stored));
-      throw e;
-    }
-    // după salvare fișierele aparțin documentului: o eroare la e-mail nu trebuie să le mai șteargă
-    audit(req, 'document adăugat', `#${id} ${doc.title}`);
-    return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
+    return createDocument(req, doc, saved);
   });
 
   app.put('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
@@ -924,34 +1017,7 @@ app.register(async (app) => {
       throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți modifica.');
     }
     const { doc, saved } = await readDocForm(req, id);
-    const removed = [];
-    const turnBefore = currentSigner(id);
-    try {
-      tx(() => {
-        db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, review_until = ?, updated_at = datetime('now') WHERE id = ?").run(
-          doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, id
-        );
-        // versiunile semnate fac parte din lanțul de semnare și nu pot fi eliminate la editare
-        const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ? AND signed_by_name IS NULL');
-        const del = db.prepare('DELETE FROM document_files WHERE id = ? AND document_id = ?');
-        for (const fid of doc.removeFileIds) {
-          const f = q.get(fid, id);
-          if (f) {
-            removed.push(f.stored, ...versionsStored(fid));
-            del.run(fid, id);
-          }
-        }
-        saveDocLinks(id, doc, saved);
-      });
-    } catch (e) {
-      removeStored(saved.map((f) => f.stored));
-      throw e;
-    }
-    removeStored(removed);
-    audit(req, 'document modificat', `#${id} ${doc.title}`);
-    // e-mail doar dacă s-a schimbat persoana care este acum la rând
-    const turn = currentSigner(id);
-    return { ok: true, mail: turn !== turnBefore ? await notifySigners(req, id, [turn]) : null };
+    return updateDocument(req, id, doc, saved);
   });
 
   // --- notificări: documente nevăzute și semnături ---
@@ -1053,7 +1119,7 @@ app.register(async (app) => {
   const publicSettings = () => {
     const { smtp_pass, ...s } = mail.getSettings();
     const { office_secret, ...o } = office.getSettings();
-    return { ...s, ...o, has_password: !!smtp_pass, has_office_secret: !!office_secret };
+    return { ...s, ...o, has_password: !!smtp_pass, has_office_secret: !!office_secret, mcp_enabled: mcpEnabled() };
   };
   app.get('/api/admin/settings', { preHandler: requireAdmin }, async () => publicSettings());
   app.put('/api/admin/settings', { preHandler: requireAdmin }, async (req) => {
@@ -1084,11 +1150,19 @@ app.register(async (app) => {
       if (String(b.office_secret).length < 8) throw fail(400, 'Cheia secretă a editorului trebuie să aibă cel puțin 8 caractere.');
       ov.office_secret = String(b.office_secret).slice(0, 500);
     }
+    const mcpBefore = mcpEnabled();
     tx(() => {
       mail.saveSettings(values);
       office.saveSettings(ov);
+      if (typeof b.mcp_enabled === 'boolean') {
+        db.prepare("INSERT INTO settings (key, value) VALUES ('mcp_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(b.mcp_enabled ? '1' : '0');
+      }
     });
-    audit(req, 'setări modificate', `SMTP ${values.smtp_host || 'dezactivat'}; editor ${office.enabled() ? office_url : 'dezactivat'}`);
+    audit(
+      req,
+      'setări modificate',
+      `SMTP ${values.smtp_host || 'dezactivat'}; editor ${office.enabled() ? office_url : 'dezactivat'}; asistenți AI ${mcpEnabled() ? 'permiși' : 'opriți'}${mcpEnabled() !== mcpBefore ? ' (schimbat)' : ''}`
+    );
     return publicSettings();
   });
   app.post('/api/admin/settings/test', { preHandler: requireAdmin }, async (req) => {
@@ -1415,6 +1489,16 @@ app.register(async (app) => {
     return { name: f.name, signatures: pdfsig.verifyPdf(await fs.promises.readFile(file), DATA_DIR) };
   });
 });
+
+// ---------- asistenți AI (MCP) ----------
+// POST /api/mcp, autentificat cu jetonul personal; aceleași reguli de acces și același jurnal ca în pagină.
+app.register(async (app) =>
+  require('./mcp')(app, {
+    db, fail, str, isId, sha, audit, UPLOAD_DIR, DATA_DIR, MAX_FILE, pdfsig, reminded,
+    isBlocked, recordFail, mcpEnabled, localToday, accessClause, listDocuments, readDoc, createDocument, updateDocument,
+    currentSigner, notifySigners, markSeen, removeStored,
+  })
+);
 
 // ---------- întreținere la pornire ----------
 // Un import întrerupt (oprirea serverului, pana de curent) lasă în urmă un folder temporar, uneori mare.

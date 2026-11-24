@@ -135,6 +135,39 @@ Dacă aplicația este servită prin HTTPS, și ONLYOFFICE trebuie servit prin HT
 - Fiecare salvare creează o **versiune nouă**; versiunile anterioare rămân descărcabile (pictograma de istoric de lângă
   fișier) și sunt incluse în backup.
 
+## 🤖 Asistenți AI (MCP)
+
+Aplicația este și server [MCP](https://modelcontextprotocol.io) (Model Context Protocol), la adresa
+`https://<adresa aplicației>/api/mcp`. Un asistent AI compatibil (Claude Code, Claude Desktop, alți clienți MCP)
+poate astfel căuta, citi și, dacă are voie, adăuga sau modifica documente **în numele unui angajat, cu exact
+drepturile acestuia**.
+
+1. Administratorul pornește accesul în **Setări → Asistenți AI (MCP)** (implicit este oprit).
+2. Angajatul apasă **Asistent AI** în bara de sus și creează un jeton personal: doar citire sau citire și
+   modificare, valabil 7 zile – un an. Jetonul se afișează o singură dată, împreună cu configurația gata de copiat.
+3. Clientul MCP trimite jetonul în antetul `Authorization: Bearer …`. Pentru Claude Code:
+
+   ```powershell
+   claude mcp add --transport http e-management-ansc https://documente.ansc.md/api/mcp --header "Authorization: Bearer ansc_…"
+   ```
+
+   Pentru clienții care acceptă doar servere locale (stdio), se poate folosi puntea `npx mcp-remote <adresă> --header "Authorization: Bearer ansc_…"`.
+
+| Instrument | Ce face |
+| :-- | :-- |
+| `whoami` | utilizatorul, rolul și dacă jetonul permite modificări |
+| `search_documents` | căutare după text, etichete, categorie, perioadă și stare (de semnat de mine, nevăzute, ale mele…) |
+| `get_document` | toate datele unui document: fișiere, etichete, vizibilitate, lanțul de semnare |
+| `read_file` | textul din Word, Excel, PowerPoint, OpenDocument și fișierele text; PDF-urile și imaginile întregi (≤ 10 MB) |
+| `verify_signatures` | verificarea semnăturilor dintr-un PDF |
+| `list_people`, `list_units`, `list_categories` | angajații, organigrama, categoriile și etichetele (pentru id-uri) |
+| `create_document`, `update_document` | adăugare și modificare (editori și administratori, jeton cu modificare), cu fișiere atașate |
+| `remind_signer`, `mark_seen` | retrimiterea e-mailului de semnare; marcarea ca văzut |
+
+Un asistent **nu poate** semna (semnarea cere tokenul fizic), șterge documente, administra conturi sau schimba
+setări. Fiecare acțiune apare în jurnal cu mențiunea `[AI: <numele jetonului>]`. Jetoanele se revocă oricând
+(administratorul le vede pe toate), iar schimbarea sau resetarea parolei și dezactivarea contului le revocă automat.
+
 ## 📁 Unde sunt datele
 
 Totul este în folderul `data/` al aplicației (sau în `DATA_DIR`):
@@ -183,6 +216,7 @@ De asigurat la instalare:
 - `src/backup.js`: exportul și importul complet.
 - `src/mail.js`: e-mailurile de semnare (nodemailer).
 - `src/office.js`: legătura cu ONLYOFFICE (JWT, tipuri de fișiere, blocarea de editare).
+- `src/mcp.js`: serverul MCP pentru asistenții AI (`/api/mcp`, jetoane personale, extragerea textului din Office).
 - `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN) și pictogramele (`favicon.svg`,
   `favicon.ico`, `apple-touch-icon.png`, `icon-512.png`, listate în `manifest.webmanifest`).
 - `scripts/make-icons.js`: regenerează pictogramele (`node scripts/make-icons.js`), fără dependențe.
