@@ -431,6 +431,9 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 /* trei coloane: e-mail, editorul de documente, copia de rezervă */
 .settings-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-content: center; }
 .settings-col { display: grid; gap: 20px; grid-template-rows: 1fr 1fr; min-height: 0; }
+/* editorul ocupă restul coloanei; panoul asistenților AI rămâne compact dedesubt */
+.settings-col.stack { grid-template-rows: 1fr auto; }
+.panel-foot .grow { flex: 1; }
 .panel { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .panel > p { margin: 0 0 6px; }
 .panel .field { margin-bottom: 10px; }
@@ -456,7 +459,13 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 @media (max-width: 1240px), (max-height: 680px) {
   .page.fit { height: auto; display: block; }
   .settings-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .settings-col { grid-template-rows: none; }
+  .settings-col, .settings-col.stack { grid-template-rows: none; }
+}
+/* coloana din mijloc (editor + asistenți AI) încape fără derulare doar pe ferestre înalte;
+   pe cele mai joase păstrăm cele trei coloane, dar pagina se derulează normal */
+@media (max-height: 879px) {
+  .page.fit { height: auto; display: block; }
+  .settings-col.stack { grid-template-rows: none; align-content: start; }
 }
 @media (max-width: 960px) {
   .settings-grid { grid-template-columns: 1fr; }

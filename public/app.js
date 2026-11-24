@@ -2548,7 +2548,9 @@ const SettingsView = {
           </div>
         </form>
         <div v-else class="card panel boot-panel"><span class="spinner"></span></div>
-        <form v-if="f" class="card panel" @submit.prevent="save">
+        <!-- coloana din mijloc: editorul de documente, cu asistenții AI dedesubt -->
+        <div v-if="f" class="settings-col stack">
+        <form class="card panel" @submit.prevent="save">
           <div class="panel-head">
             <h2>Editor de documente</h2>
             <span class="pill" :class="f.office_url && (f.has_office_secret || f.office_secret) ? 'green' : 'gray'">{{ f.office_url && f.has_office_secret ? 'Activ' : 'Dezactivat' }}</span>
@@ -2564,22 +2566,21 @@ const SettingsView = {
             <button class="btn primary" :disabled="busy">Salvează setările</button>
           </div>
         </form>
-        <form v-if="f" class="card panel" @submit.prevent="save">
+        <form class="card panel" @submit.prevent="save">
           <div class="panel-head">
             <h2>Asistenți AI (MCP)</h2>
             <span class="pill" :class="f.mcp_enabled ? 'green' : 'gray'">{{ f.mcp_enabled ? 'Permis' : 'Oprit' }}</span>
           </div>
           <p class="muted small">
-            Angajații își pot crea, din butonul „Asistent AI”, jetoane personale cu care un asistent compatibil MCP (de ex. Claude)
-            caută, citește și, dacă permit, adaugă sau modifică documente în numele lor, cu aceleași drepturi.
-            Asistentul nu poate semna, șterge documente sau administra conturi; acțiunile lui apar în jurnal cu mențiunea [AI].
-            Oprirea blochează imediat toate jetoanele.
+            Prin jetoane personale (butonul „Asistent AI”), un asistent precum Claude lucrează în numele angajatului, cu aceleași drepturi.
+            Nu poate semna sau șterge; acțiunile apar în jurnal cu [AI]. Oprirea blochează imediat toate jetoanele.
           </p>
-          <label class="check"><input type="checkbox" v-model="f.mcp_enabled" /> Permite accesul asistenților AI</label>
           <div class="panel-foot">
-            <button class="btn primary" :disabled="busy">Salvează setările</button>
+            <label class="check grow"><input type="checkbox" v-model="f.mcp_enabled" /> Permite accesul asistenților AI</label>
+            <button class="btn primary" :disabled="busy">Salvează</button>
           </div>
         </form>
+        </div>
         <div class="settings-col"><BackupView /></div>
       </div>
     </div>`,
