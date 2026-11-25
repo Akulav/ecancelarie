@@ -20,6 +20,11 @@ Modificările importante din e-Management ANSC. Versiunile urmează [Semantic Ve
 - Meniul contului (asistent AI, schimbarea parolei, ieșire) într-un singur buton cu inițialele, în bara de sus.
 - Listele goale (documente, notificări) au ilustrație, explicație și o acțiune („Șterge filtrele”, „Document nou”).
 
+### Corectat
+- Când puntea de semnare FleetView nu poate fi folosită, mesajul spune acum cauza reală în locul unui
+  „nu răspunde” general: agentul refuză adresa site-ului (alt `emanagement_url`), browserul blochează
+  accesul la rețeaua locală, sau puntea nu este activată / nu a pornit pe acel calculator.
+
 ### Securitate
 - Schimbarea sau resetarea parolei și dezactivarea contului revocă jetoanele AI ale persoanei.
 

@@ -867,6 +867,40 @@ async function ensureSignToken() {
   return signToken;
 }
 
+// Pentru browser, orice eșec al cererii către punte arată la fel („nu răspunde”), deși cauzele diferă.
+// Bulina verde din tavă înseamnă doar că agentul vorbește cu serverul FleetView, nu că puntea de semnare
+// funcționează. Aici deosebim cauzele, ca mesajul să spună ce trebuie reparat pe acel calculator:
+//  1. browserul a blocat accesul paginii la calculatorul local (permisiunea „rețea locală”);
+//  2. nimic nu ascultă pe portul punții (puntea nu este activată în configurația agentului sau nu a pornit);
+//  3. puntea răspunde, dar refuză adresa site-ului: agentul este configurat pentru altă adresă decât cea
+//     din bara browserului (alt nume, IP, http/https sau port).
+async function bridgeDiagnosis() {
+  const origin = location.origin;
+  const port = new URL(SIGN_BRIDGE_URL).port;
+  // O cerere „no-cors” reușește dacă ceva ascultă pe port, chiar dacă puntea refuză apoi originea.
+  let listening = false;
+  try {
+    await fetch(SIGN_BRIDGE_URL + '/certificates', { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    listening = true;
+  } catch {}
+  if (listening) {
+    return `Agentul FleetView rulează, dar refuză acest site: este configurat pentru altă adresă decât ${origin}. Deschideți aplicația de la adresa folosită la instalarea agentului sau cereți administratorului să corecteze „emanagement_url” în C:\\ProgramData\\FleetView\\agent.config.json (trebuie să fie exact ${origin}), apoi să repornească serviciul FleetView.`;
+  }
+  // Nici sonda nu trece: fie browserul blochează accesul la calculatorul local (permisiunea „rețea locală”,
+  // al cărei nume diferă între versiunile Chrome / Edge), fie puntea nu ascultă. Starea permisiunii contează
+  // doar aici: o pagină deschisă chiar de pe calculator nu este supusă acestei permisiuni.
+  if (navigator.permissions) {
+    for (const name of ['local-network-access', 'loopback-network', 'local-network']) {
+      try {
+        if ((await navigator.permissions.query({ name })).state === 'denied') {
+          return `Browserul a blocat accesul acestui site la calculatorul local, deci nu poate ajunge la agentul FleetView. Faceți clic pe lacătul din stânga adresei → Setări site → „Acces la rețeaua locală” (sau „Dispozitive locale”) → Permite, apoi reîncărcați pagina.`;
+        }
+      } catch {}
+    }
+  }
+  return `Puntea de semnare FleetView nu răspunde pe acest calculator (portul ${port}). Bulina verde arată doar legătura cu serverul FleetView; semnarea mai cere ca în C:\\ProgramData\\FleetView\\agent.config.json să existe „emanagement_url”: „${origin}”, iar după modificare serviciul FleetView să fie repornit. Dacă setarea există, jurnalul agentului arată motivul (ex. „sign bridge cannot bind”).`;
+}
+
 // Trimite o cerere tăvii FleetView, cu jetonul de semnare ca Bearer. Dacă jetonul a
 // expirat (401), cere unul nou și reîncearcă o singură dată: tava respinge cererea
 // înainte de a o trimite la MoldSign, deci reîncercarea este sigură.
@@ -877,7 +911,7 @@ async function bridge(pathname, init = {}, retried = false) {
   try {
     r = await fetch(SIGN_BRIDGE_URL + pathname, { ...init, headers, credentials: 'omit' });
   } catch {
-    throw new Error('Puntea de semnare FleetView nu răspunde. Asigurați-vă că agentul FleetView rulează pe acest calculator și reîncercați.');
+    throw new Error(await bridgeDiagnosis());
   }
   if (r.status === 401) {
     signToken = null;
