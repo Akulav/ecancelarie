@@ -167,6 +167,27 @@ for (const [table, cols] of Object.entries(REQUIRED)) {
   }
 }
 
+// Coloane și tabele adăugate după 1.0.2 (se adaugă automat și în bazele existente).
+function addColumn(table, col, def) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+}
+// înlocuitorul pe durata absenței: semnează în locul persoanei absente, în loc ca aceasta să treacă la final
+addColumn('absences', 'substitute_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+// cine a semnat efectiv, când a semnat un înlocuitor
+addColumn('document_signers', 'signed_by_name', 'TEXT');
+// termenul de semnare (AAAA-LL-ZZ) și ziua ultimei reamintiri automate trimise
+addColumn('documents', 'sign_until', "TEXT NOT NULL DEFAULT ''");
+addColumn('documents', 'sign_reminded', "TEXT NOT NULL DEFAULT ''");
+db.exec(`
+-- documentele marcate cu stea de fiecare utilizator
+CREATE TABLE IF NOT EXISTS document_favorites (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, document_id)
+);
+`);
+
 const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');
 
 function tx(fn) {

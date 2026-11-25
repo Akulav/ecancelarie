@@ -20,11 +20,12 @@ const { db, tx, UPLOAD_DIR, DATA_DIR } = require('./db');
 const MAGIC = 'ANSC-BACKUP 1';
 const STORED = /^[0-9a-f]{32}$/;
 // Ordinea contează doar la ștergere (copiii înaintea părinților); sesiunile nu se exportă.
-// file_versions = versiunile anterioare ale fișierelor modificate în editor, absences = absențele angajaților
-// (ambele lipsesc din backupurile vechi).
+// file_versions = versiunile anterioare ale fișierelor modificate în editor, absences = absențele angajaților,
+// document_favorites = documentele cu stea (toate lipsesc din backupurile vechi).
 const TABLES = [
   'units', 'users', 'absences', 'categories', 'tags', 'documents',
   'document_files', 'file_versions', 'document_tags', 'document_units', 'document_users', 'document_seen', 'document_signers',
+  'document_favorites',
 ];
 const bad = (message) => Object.assign(new Error(message), { expose: true });
 const line = (obj) => Buffer.from(JSON.stringify(obj) + '\n');
@@ -180,7 +181,7 @@ async function importArchive(input) {
   const stage = fs.mkdtempSync(path.join(DATA_DIR, 'import-'));
   try {
     const { data, files } = await readArchive(input, stage);
-    if (data.format !== 1 || !data.tables || !TABLES.every((t) => Array.isArray(data.tables[t]) || t.startsWith('document_s') || t === 'file_versions' || t === 'absences')) {
+    if (data.format !== 1 || !data.tables || !TABLES.every((t) => Array.isArray(data.tables[t]) || t.startsWith('document_s') || t === 'file_versions' || t === 'absences' || t === 'document_favorites')) {
       throw bad('Versiune de backup necunoscută.');
     }
     const missing = new Set(data.missing || []);

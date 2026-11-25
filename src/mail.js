@@ -35,13 +35,18 @@ const sender = (s) => s.smtp_from || s.smtp_user || 'e-management@localhost';
 // Trimite fiecărui semnatar solicitarea de semnare. Întoarce cine a fost notificat și cine nu,
 // ca interfața să poată avertiza autorul; o eroare de e-mail nu anulează salvarea documentului.
 // `origin` este adresa de la care a venit cererea, folosită când „Adresa aplicației” nu este setată.
-async function sendSignRequests(doc, users, origin) {
+// `reminder` = reamintirea automată când termenul de semnare se apropie sau a trecut.
+// Un utilizator cu `on_behalf` semnează ca înlocuitor al unei persoane absente.
+async function sendSignRequests(doc, users, origin, { reminder = false } = {}) {
   const s = getSettings();
   const out = { disabled: !s.smtp_host, sent: [], failed: [], noEmail: [] };
   if (out.disabled) return out;
   const transport = open(s);
   const url = (s.app_url || origin).replace(/\/+$/, '');
-  const date = doc.doc_date ? doc.doc_date.split('-').reverse().join('.') : 'fără dată';
+  const day = (d) => d.split('-').reverse().join('.');
+  const date = doc.doc_date ? day(doc.doc_date) : 'fără dată';
+  const today = new Date().toLocaleDateString('sv-SE');
+  const due = doc.sign_until ? `  Termen de semnare: ${day(doc.sign_until)}${doc.sign_until < today ? ' (depășit)' : ''}\n` : '';
   await Promise.all(
     users.map(async (u) => {
       if (!u.email) return out.noEmail.push(u.full_name);
@@ -49,12 +54,15 @@ async function sendSignRequests(doc, users, origin) {
         await transport.sendMail({
           from: sender(s),
           to: { name: u.full_name, address: u.email },
-          subject: `Document de semnat: ${doc.title}`,
+          subject: `${reminder ? 'Reamintire, termen de semnare' : 'Document de semnat'}: ${doc.title}`,
           text:
             `Bună ziua, ${u.full_name},\n\n` +
-            `Este rândul dvs. să semnați un document în sistemul e-Management ANSC:\n\n` +
+            (reminder ? `Vă reamintim că documentul de mai jos așteaptă semnătura dvs.:\n\n` : `Este rândul dvs. să semnați un document în sistemul e-Management ANSC:\n\n`) +
             `  ${doc.title}${doc.number ? ' (nr. ' + doc.number + ')' : ''}\n` +
-            `  Data documentului: ${date}\n\n` +
+            `  Data documentului: ${date}\n` +
+            due +
+            (u.on_behalf ? `  Semnați în locul: ${u.on_behalf} (absent)\n` : '') +
+            `\n` +
             `Pași: deschideți ${url}/#notificari, descărcați versiunea curentă a documentului,\n` +
             `semnați-o digital și încărcați fișierul semnat în aceeași înregistrare.\n\n` +
             `Acest mesaj a fost generat automat.`,

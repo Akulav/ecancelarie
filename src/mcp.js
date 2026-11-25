@@ -220,6 +220,7 @@ module.exports = function registerMcp(app, h) {
     user_ids: idsSchema('Persoanele cu acces, doar la „restricted” (vezi list_people).'),
     signer_ids: idsSchema('Semnatarii, în ordinea semnării (vezi list_people). Fiecare primește documentul când îi vine rândul.'),
     review_until: { type: 'string', description: 'Avizare: până la această dată (AAAA-LL-ZZ, inclusiv) cei care văd documentul pot propune modificări în editor. Șir gol = fără avizare.' },
+    sign_until: { type: 'string', description: 'Termenul de semnare (AAAA-LL-ZZ); cu o zi înainte și apoi zilnic, semnatarul aflat la rând primește o reamintire. Șir gol = fără termen.' },
   };
   const filesSchema = {
     type: 'array',
@@ -345,6 +346,8 @@ module.exports = function registerMcp(app, h) {
           shared_with_people: d.userIds.map((u) => ({ id: u, name: m.users.get(u) })),
           review_until: d.review_until || null,
           review_open: d.reviewOpen,
+          sign_until: d.sign_until || null,
+          favorite: d.fav || undefined,
           files: d.files.map((f) => ({
             id: f.id,
             name: f.name,
@@ -358,7 +361,8 @@ module.exports = function registerMcp(app, h) {
             id: s.id,
             name: s.name,
             signed_at: s.signed_at,
-            absent_today: s.absent ? `${s.absent.kind} până la ${s.absent.to_date}` : undefined,
+            absent_today: s.absent ? `${s.absent.kind} până la ${s.absent.to_date}${s.absent.substitute_name ? ', înlocuit de ' + s.absent.substitute_name : ''}` : undefined,
+            signed_by_substitute: s.signed_by_name || undefined,
             inactive: s.active ? undefined : true,
           })),
           signing: signStatus(d),
@@ -507,6 +511,7 @@ module.exports = function registerMcp(app, h) {
             description: a.description,
             visibility: a.visibility,
             review_until: a.review_until,
+            sign_until: a.sign_until,
             tagIds: a.tag_ids,
             unitIds: a.unit_ids,
             userIds: a.user_ids,
@@ -543,6 +548,7 @@ module.exports = function registerMcp(app, h) {
             description: pick('description', d.description),
             visibility: pick('visibility', d.visibility),
             review_until: pick('review_until', d.review_until),
+            sign_until: pick('sign_until', d.sign_until),
             tagIds: pick('tag_ids', d.tagIds),
             unitIds: pick('unit_ids', d.unitIds),
             userIds: pick('user_ids', d.userIds),

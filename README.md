@@ -32,6 +32,12 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
 - **Categorii și etichete** definite de administrator (ex. „Resurse umane” → „Concedii”).
 - **Vizibilitate** pentru toți angajații sau doar pentru subdiviziunile și persoanele selectate (o subdiviziune include
   și subdiviziunile din subordinea ei). Autorul și administratorii văd documentul întotdeauna.
+- **Acasă**: pagina de start arată ce aveți de semnat (cu termenele), documentele dvs. aflate la semnare,
+  favoritele, documentele noi, avizările deschise și colegii absenți azi.
+- **Favorite**: steaua dintr-un document îl păstrează la îndemână (preferință personală, fiecare are ale lui).
+- **Selecție multiplă**: „Selectează” în pagina Documente permite descărcarea mai multor documente într-o singură
+  arhivă ZIP (un dosar pentru fiecare document) sau marcarea lor ca văzute.
+- Documentele **fără dată** (formulare, modele) au propriul grup și propria opțiune în filtrul după an.
 - **Notificări**: pictograma cutiei poștale arată documentele nevăzute și cele care așteaptă semnătura.
 - **Avizare**: până la un termen, cei care văd documentul îl deschid și îl modifică direct în pagină (editorul
   ONLYOFFICE); la documentele Word modificările lor apar ca propuneri, iar autorul le acceptă sau le respinge.
@@ -46,6 +52,9 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
 - Persoana aflată la rând primește un **e-mail**.
 - **Absențe**: administratorul înregistrează în pagina „Angajați” concediile și deplasările (tip, de la, până la).
   Cât timp lipsește, persoana trece la finalul ordinii de semnare, iar colegii o văd marcată „Absent până la …”.
+  Cu un **înlocuitor** ales, ordinea nu se schimbă: înlocuitorul vede documentele și semnează în locul ei.
+- **Termen de semnare** (opțional): documentele cu termen depășit sunt marcate cu roșu, iar persoana aflată la rând
+  primește o reamintire pe e-mail cu o zi înainte de termen și apoi zilnic (în zilele lucrătoare, 9–18).
 - Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 
 </td>

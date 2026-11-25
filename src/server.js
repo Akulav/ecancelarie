@@ -10,6 +10,7 @@ const mail = require('./mail');
 const backup = require('./backup');
 const pdfsig = require('./pdfsig');
 const office = require('./office');
+const zip = require('./zip');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -82,8 +83,11 @@ function accessClause(user) {
     sql: `(d.visibility = 'all' OR d.created_by = ?
       OR EXISTS (SELECT 1 FROM document_users x WHERE x.document_id = d.id AND x.user_id = ?)
       OR EXISTS (SELECT 1 FROM document_signers x WHERE x.document_id = d.id AND x.user_id = ?)
-      OR EXISTS (SELECT 1 FROM document_units x WHERE x.document_id = d.id AND x.unit_id IN (${marks})))`,
-    params: [user.id, user.id, user.id, ...chain],
+      OR EXISTS (SELECT 1 FROM document_units x WHERE x.document_id = d.id AND x.unit_id IN (${marks}))
+      OR EXISTS (SELECT 1 FROM document_signers x JOIN absences ab ON ab.user_id = x.user_id
+                 WHERE x.document_id = d.id AND x.signed_at IS NULL AND ab.substitute_id = ? AND ab.from_date <= ? AND ab.to_date >= ?))`,
+    // înlocuitorul unei persoane absente vede documentele pe care aceasta le are de semnat
+    params: [user.id, user.id, user.id, ...chain, user.id, localToday(), localToday()],
   };
 }
 const canEdit = (user, doc) => user.role === 'admin' || (user.role === 'editor' && doc.created_by === user.id);
@@ -99,6 +103,12 @@ const versionsStored = (fileId) => db.prepare('SELECT stored FROM file_versions 
 function localToday() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+// data de azi plus `n` zile, după același ceas
+function localDay(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 // Avizarea este deschisă până la sfârșitul zilei-termen, inclusiv.
 const reviewOpen = (doc) => !!doc.review_until && doc.review_until >= localToday();
@@ -168,7 +178,9 @@ async function requireUser(req, reply) {
   }
   if (user.must_change && !req.routeOptions.config.allowMustChange) throw fail(403, 'Schimbați mai întâi parola.');
   req.user = me;
+  lastOrigin = `${req.protocol}://${req.host}`;
 }
+let lastOrigin = '';
 async function requireAdmin(req, reply) {
   await requireUser(req, reply);
   if (req.user.role !== 'admin') throw fail(403, 'Acțiune permisă doar administratorilor.');
@@ -271,6 +283,7 @@ function readDoc(data, docId = null) {
     number: str(data.number, 60),
     description: str(data.description, 5000),
     review_until: data.review_until && validDate(str(data.review_until, 10)) ? str(data.review_until, 10) : '',
+    sign_until: data.sign_until && validDate(str(data.sign_until, 10)) ? str(data.sign_until, 10) : '',
     tagIds: exists('tags', idList(data.tagIds)),
     unitIds: visibility === 'restricted' ? exists('units', idList(data.unitIds)) : [],
     userIds: visibility === 'restricted' ? exists('users', idList(data.userIds)) : [],
@@ -339,9 +352,11 @@ async function discardUploads(req) {
 }
 
 // Semnarea este în lanț: următorul la rând este primul semnatar (după poziție) care încă nu a semnat.
-// Cine este absent azi (concediu, deplasare…) trece la finalul lanțului până se întoarce; dacă au rămas
-// doar persoane absente, rândul este tot al lor.
-const ABSENT_NOW = 'EXISTS (SELECT 1 FROM absences a WHERE a.user_id = s.user_id AND a.from_date <= ? AND a.to_date >= ?)';
+// Cine este absent azi (concediu, deplasare…) fără înlocuitor trece la finalul lanțului până se întoarce;
+// dacă au rămas doar persoane absente, rândul este tot al lor. Cine are înlocuitor își păstrează locul,
+// iar înlocuitorul semnează în locul lui (vezi actorOf).
+const ABSENT_NOW = `EXISTS (SELECT 1 FROM absences a WHERE a.user_id = s.user_id AND a.from_date <= ? AND a.to_date >= ?
+  AND NOT EXISTS (SELECT 1 FROM users su WHERE su.id = a.substitute_id AND su.active = 1))`;
 function currentSigner(docId) {
   const today = localToday();
   const r = db
@@ -349,14 +364,22 @@ function currentSigner(docId) {
     .get(docId, today, today);
   return r ? r.user_id : null;
 }
-// absențele în curs azi, după utilizator
+// absențele în curs azi, după utilizator (cu înlocuitorul, dacă are cont activ)
+const AWAY_SQL = `SELECT a.user_id, a.kind, a.to_date, su.id AS substitute_id, su.full_name AS substitute_name
+  FROM absences a LEFT JOIN users su ON su.id = a.substitute_id AND su.active = 1
+  WHERE a.from_date <= ? AND a.to_date >= ?`;
 function absentToday() {
   const today = localToday();
   const map = new Map();
-  for (const a of db.prepare('SELECT user_id, kind, to_date FROM absences WHERE from_date <= ? AND to_date >= ? ORDER BY to_date').all(today, today)) {
-    map.set(a.user_id, { kind: a.kind, to_date: a.to_date });
-  }
+  for (const { user_id, ...a } of db.prepare(AWAY_SQL + ' ORDER BY a.to_date').all(today, today)) map.set(user_id, a);
   return map;
+}
+// Cine semnează efectiv când este rândul persoanei: ea însăși sau înlocuitorul ei, dacă este absentă.
+function actorOf(userId) {
+  if (!userId) return null;
+  const today = localToday();
+  const a = db.prepare(AWAY_SQL + ' AND a.user_id = ? ORDER BY a.to_date DESC LIMIT 1').get(today, today, userId);
+  return a && a.substitute_id ? a.substitute_id : userId;
 }
 const ABSENCE_KINDS = ['Concediu de odihnă', 'Concediu medical', 'Concediu de studii', 'Concediu fără plată', 'Deplasare', 'Altele'];
 
@@ -393,12 +416,19 @@ function saveDocLinks(id, doc, saved) {
   order.forEach((x, i) => (current.some((s) => s.user_id === x) ? moveSigner.run(i, id, x) : addSigner.run(id, x, i)));
 }
 
-async function notifySigners(req, docId, userIds) {
+async function notifySigners(req, docId, userIds, opts) {
   userIds = userIds.filter(Boolean);
   if (!userIds.length) return null;
-  const doc = db.prepare('SELECT id, title, number, doc_date FROM documents WHERE id = ?').get(docId);
+  const doc = db.prepare('SELECT id, title, number, doc_date, sign_until FROM documents WHERE id = ?').get(docId);
   const q = db.prepare('SELECT full_name, email FROM users WHERE id = ? AND active = 1');
-  return mail.sendSignRequests(doc, userIds.map((id) => q.get(id)).filter(Boolean), `${req.protocol}://${req.host}`);
+  const users = userIds
+    .map((id) => {
+      const actor = actorOf(id);
+      const u = q.get(actor);
+      return u && actor !== id ? { ...u, on_behalf: (q.get(id) || {}).full_name || '' } : u;
+    })
+    .filter(Boolean);
+  return mail.sendSignRequests(doc, users, req ? `${req.protocol}://${req.host}` : lastOrigin, opts);
 }
 
 // Creează / modifică un document deja validat (readDoc), cu fișierele deja scrise pe disc. Folosite de
@@ -408,8 +438,8 @@ async function createDocument(req, doc, saved) {
   try {
     id = tx(() => {
       const r = db
-        .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, req.user.id);
+        .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, sign_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, doc.sign_until, req.user.id);
       saveDocLinks(lastId(r), doc, saved);
       return lastId(r);
     });
@@ -426,9 +456,10 @@ async function updateDocument(req, id, doc, saved) {
   const turnBefore = currentSigner(id);
   try {
     tx(() => {
-      db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, review_until = ?, updated_at = datetime('now') WHERE id = ?").run(
-        doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, id
-      );
+      // un termen nou de semnare repornește reamintirile automate
+      db.prepare(
+        "UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, review_until = ?, sign_reminded = CASE WHEN sign_until = ? THEN sign_reminded ELSE '' END, sign_until = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, doc.sign_until, doc.sign_until, id);
       // versiunile semnate fac parte din lanțul de semnare și nu pot fi eliminate la editare
       const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ? AND signed_by_name IS NULL');
       const del = db.prepare('DELETE FROM document_files WHERE id = ? AND document_id = ?');
@@ -468,19 +499,20 @@ function listDocuments(user, onlyId = null) {
   const acc = accessClause(user);
   const rows = db
     .prepare(
-      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.review_until, d.created_by, d.created_at,
+      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.review_until, d.sign_until, d.created_by, d.created_at,
               a.full_name AS author,
-              EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen
+              EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen,
+              EXISTS (SELECT 1 FROM document_favorites f WHERE f.document_id = d.id AND f.user_id = ?) AS fav
        FROM documents d LEFT JOIN users a ON a.id = d.created_by
        WHERE ${acc.sql}${onlyId ? ' AND d.id = ?' : ''}
        ORDER BY d.doc_date DESC, d.id DESC`
     )
-    .all(user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
+    .all(user.id, user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
   if (!rows.length) return [];
   const away = absentToday();
   const signers = byDocument(
     db.prepare(
-      'SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id ORDER BY s.position, s.user_id'
+'SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at, s.signed_by_name FROM document_signers s JOIN users u ON u.id = s.user_id ORDER BY s.position, s.user_id'
     ).all(),
     (r) => ({ ...r, active: !!r.active, absent: away.get(r.id) || null })
   );
@@ -488,16 +520,22 @@ function listDocuments(user, onlyId = null) {
   const units = byDocument(db.prepare('SELECT document_id, unit_id FROM document_units').all(), (r) => r.unit_id);
   const users = byDocument(db.prepare('SELECT document_id, user_id FROM document_users').all(), (r) => r.user_id);
   const files = byDocument(db.prepare('SELECT document_id, id, name, size, signed_by, signed_by_name, created_at, version, edited_by_name, edited_at FROM document_files ORDER BY id').all());
-  return rows.map(({ seen, ...d }) => {
+  // absent fără înlocuitor: nu este așteptat (trece la final)
+  const skipped = (s) => s.absent && !s.absent.substitute_id;
+  return rows.map(({ seen, fav, ...d }) => {
     const sig = signers.get(d.id) || [];
     const mine = sig.find((s) => s.id === user.id);
-    const turn = sig.find((s) => !s.signed_at && !s.absent) || sig.find((s) => !s.signed_at);
+    const turn = sig.find((s) => !s.signed_at && !skipped(s)) || sig.find((s) => !s.signed_at);
+    const actor = turn ? (turn.absent && turn.absent.substitute_id) || turn.id : null;
     return {
       ...d,
+      fav: !!fav,
       signers: sig,
       signTurn: turn ? turn.id : null,
-      // 'pending' = este rândul meu; 'waiting' = aștept să semneze cei dinaintea mea
-      mySign: mine ? (mine.signed_at ? 'signed' : turn && turn.id === user.id ? 'pending' : 'waiting') : null,
+      // cine semnează acum: semnatarul aflat la rând sau înlocuitorul lui
+      signActor: actor,
+      // 'pending' = este rândul meu (sau semnez ca înlocuitor); 'waiting' = aștept să semneze cei dinaintea mea
+      mySign: actor === user.id ? 'pending' : mine ? (mine.signed_at ? 'signed' : 'waiting') : null,
       canDelete: canDelete(user, d, sig),
       // „nevăzut” = document al altcuiva, apărut după crearea contului și încă nedeschis
       unseen: !seen && d.created_by !== user.id && d.created_at >= user.created_at,
@@ -687,7 +725,7 @@ app.register(async (app) => {
     users: db.prepare('SELECT id, full_name, position, email, phone, unit_id FROM users WHERE active = 1 ORDER BY full_name').all(),
     // absențele în curs și cele programate; observația o vede doar administratorul
     absences: db
-      .prepare('SELECT id, user_id, kind, from_date, to_date, note FROM absences WHERE to_date >= ? ORDER BY from_date, id')
+      .prepare('SELECT id, user_id, kind, from_date, to_date, note, substitute_id FROM absences WHERE to_date >= ? ORDER BY from_date, id')
       .all(localToday())
       .map((a) => (req.user.role === 'admin' ? a : { ...a, note: '' })),
     absenceKinds: ABSENCE_KINDS,
@@ -698,13 +736,14 @@ app.register(async (app) => {
   // Când o absență începe azi sau se anulează, rândul la semnare se poate muta: anunțăm noul semnatar.
   function signTurnsAround(userId, change) {
     const docs = db.prepare('SELECT document_id FROM document_signers WHERE user_id = ? AND signed_at IS NULL').all(userId).map((r) => r.document_id);
-    const before = new Map(docs.map((d) => [d, currentSigner(d)]));
+    const before = new Map(docs.map((d) => [d, actorOf(currentSigner(d))]));
     change();
-    return docs.filter((d) => currentSigner(d) !== before.get(d));
+    return docs.filter((d) => actorOf(currentSigner(d)) !== before.get(d));
   }
   function absenceLabel(a) {
-    const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(a.user_id);
-    return `${user ? user.full_name : '#' + a.user_id}: ${a.kind}, ${a.from_date} – ${a.to_date}`;
+    const name = (id) => (db.prepare('SELECT full_name FROM users WHERE id = ?').get(id) || { full_name: '#' + id }).full_name;
+    const ro = (d) => d.split('-').reverse().join('.');
+    return `${name(a.user_id)}: ${a.kind}, ${ro(a.from_date)} – ${ro(a.to_date)}${a.substitute_id ? ', înlocuit de ' + name(a.substitute_id) : ''}`;
   }
   app.post('/api/absences', { preHandler: requireAdmin }, async (req) => {
     const b = req.body || {};
@@ -718,17 +757,23 @@ app.register(async (app) => {
     if (to < from) throw fail(400, 'Data de sfârșit nu poate fi înaintea datei de început.');
     if (to < localToday()) throw fail(400, 'Absența s-a încheiat deja; indicați o perioadă actuală sau viitoare.');
     const note = str(b.note, 300);
+    const sub = idOrNull(b.substitute_id);
+    if (sub !== null && (sub === userId || !db.prepare('SELECT 1 FROM users WHERE id = ? AND active = 1').get(sub))) {
+      throw fail(400, 'Înlocuitorul trebuie să fie alt angajat, cu cont activ.');
+    }
     let id;
     const moved = signTurnsAround(userId, () => {
-      id = lastId(db.prepare('INSERT INTO absences (user_id, kind, from_date, to_date, note) VALUES (?, ?, ?, ?, ?)').run(userId, kind, from, to, note));
+      id = lastId(
+        db.prepare('INSERT INTO absences (user_id, kind, from_date, to_date, note, substitute_id) VALUES (?, ?, ?, ?, ?, ?)').run(userId, kind, from, to, note, sub)
+      );
     });
-    audit(req, 'absență adăugată', absenceLabel({ user_id: userId, kind, from_date: from, to_date: to }));
+    audit(req, 'absență adăugată', absenceLabel({ user_id: userId, kind, from_date: from, to_date: to, substitute_id: sub }));
     for (const docId of moved) notifySigners(req, docId, [currentSigner(docId)]).catch((e) => req.log.error(e));
     return { id, movedDocs: moved.length };
   });
   app.delete('/api/absences/:id', { preHandler: requireAdmin }, async (req) => {
     const id = paramId(req);
-    const old = db.prepare('SELECT user_id, kind, from_date, to_date FROM absences WHERE id = ?').get(id);
+    const old = db.prepare('SELECT user_id, kind, from_date, to_date, substitute_id FROM absences WHERE id = ?').get(id);
     if (!old) throw fail(404, 'Absența nu a fost găsită.');
     const moved = signTurnsAround(old.user_id, () => db.prepare('DELETE FROM absences WHERE id = ?').run(id));
     audit(req, 'absență anulată', absenceLabel(old));
@@ -1032,6 +1077,64 @@ app.register(async (app) => {
     markSeen(req.user.id, doc.id);
     return { ok: true };
   });
+  // documente cu stea: o preferință personală, fără efect asupra celorlalți
+  app.post('/api/documents/:id/favorite', { preHandler: requireUser }, async (req) => {
+    const doc = accessibleDoc(req.user, paramId(req));
+    if (!doc) throw fail(404, 'Documentul nu a fost găsit.');
+    if (req.body && req.body.on === false) db.prepare('DELETE FROM document_favorites WHERE user_id = ? AND document_id = ?').run(req.user.id, doc.id);
+    else db.prepare('INSERT OR IGNORE INTO document_favorites (user_id, document_id) VALUES (?, ?)').run(req.user.id, doc.id);
+    return { ok: true };
+  });
+  app.post('/api/documents/seen-many', { preHandler: requireUser }, async (req) => {
+    let n = 0;
+    for (const id of idList((req.body || {}).ids)) {
+      if (accessibleDoc(req.user, id)) {
+        markSeen(req.user.id, id);
+        n++;
+      }
+    }
+    return { ok: true, count: n };
+  });
+  // Mai multe documente într-o singură arhivă ZIP: câte un dosar pentru fiecare document.
+  app.get('/api/documents/zip', { preHandler: requireUser }, async (req, reply) => {
+    const ids = idList(String(req.query.ids || '').split(',')).slice(0, 500);
+    if (!ids.length) throw fail(400, 'Alegeți cel puțin un document.');
+    const acc = accessClause(req.user);
+    const docs = db
+      .prepare(`SELECT d.id, d.title, d.number, d.doc_date FROM documents d WHERE d.id IN (${ids.map(() => '?').join(',')}) AND ${acc.sql} ORDER BY d.doc_date DESC, d.id DESC`)
+      .all(...ids, ...acc.params);
+    if (!docs.length) throw fail(404, 'Documentele nu au fost găsite.');
+    const entries = [];
+    const used = new Set();
+    const unique = (name) => {
+      let n = name;
+      for (let i = 2; used.has(n.toLowerCase()); i++) n = name.replace(/(\.[^./]*)?$/, ` (${i})$1`);
+      used.add(n.toLowerCase());
+      return n;
+    };
+    let total = 0;
+    for (const d of docs) {
+      const folder = unique(zip.safeName(`${d.doc_date || 'fara data'} ${d.number ? d.number + ' ' : ''}${d.title}`, 100));
+      for (const f of db.prepare('SELECT name, stored FROM document_files WHERE document_id = ? ORDER BY id').all(d.id)) {
+        const file = path.join(UPLOAD_DIR, f.stored);
+        let size;
+        try {
+          size = fs.statSync(file).size;
+        } catch {
+          continue; // fișier lipsă de pe disc: se semnalează la pornire, nu blochează arhiva
+        }
+        total += size;
+        entries.push({ name: unique(folder + '/' + zip.safeName(f.name, 150)), file, size });
+      }
+    }
+    if (!entries.length) throw fail(404, 'Documentele alese nu au fișiere.');
+    if (entries.length > zip.MAX_ENTRIES || total > zip.MAX_TOTAL) throw fail(400, 'Arhiva ar fi prea mare. Alegeți mai puține documente.');
+    for (const d of docs) markSeen(req.user.id, d.id);
+    audit(req, 'arhivă descărcată', `${docs.length} documente: ${docs.map((d) => '#' + d.id).join(', ')}`);
+    reply.type('application/zip').header('Content-Disposition', `attachment; filename="documente-${localToday()}.zip"`);
+    return reply.send(Readable.from(zip.zipStream(entries)));
+  });
+
   // --- semnare cu tokenul prin puntea FleetView ---
   // Emite un jeton de scurtă durată, legat de utilizatorul autentificat. Browserul îl
   // trimite tăvii FleetView (ca Bearer), care îl validează prin /api/sign/validate.
@@ -1056,8 +1159,9 @@ app.register(async (app) => {
   app.post('/api/documents/:id/sign', { preHandler: requireUser }, async (req) => {
     const id = paramId(req);
     const doc = db.prepare('SELECT id, title FROM documents WHERE id = ?').get(id);
-    // verificăm înainte de a scrie ceva pe disc: doar persoana aflată la rând poate încărca
-    if (!doc || currentSigner(id) !== req.user.id) {
+    // verificăm înainte de a scrie ceva pe disc: doar persoana aflată la rând (sau înlocuitorul ei) poate încărca
+    const turn = currentSigner(id);
+    if (!doc || !turn || actorOf(turn) !== req.user.id) {
       await discardUploads(req);
       throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
     }
@@ -1083,19 +1187,22 @@ app.register(async (app) => {
       let replaced = [];
       tx(() => {
         // lanțul poate fi modificat de autor cât timp fișierul se încarcă: verificăm din nou, atomic
-        if (currentSigner(id) !== req.user.id) throw fail(403, 'Ordinea semnării s-a schimbat între timp; nu mai este rândul dvs.');
+        if (currentSigner(id) !== turn || actorOf(turn) !== req.user.id) throw fail(403, 'Ordinea semnării s-a schimbat între timp; nu mai este rândul dvs.');
         // Se păstrează doar originalele și ultima versiune semnată: noua versiune conține deja
         // semnăturile anterioare, deci versiunile semnate intermediare se elimină.
         replaced = db.prepare('SELECT stored FROM document_files WHERE document_id = ? AND signed_by_name IS NOT NULL').all(id).map((f) => f.stored);
         db.prepare('DELETE FROM document_files WHERE document_id = ? AND signed_by_name IS NOT NULL').run(id);
         const ins =db.prepare("INSERT INTO document_files (document_id, name, stored, size, signed_by, signed_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
         saved.forEach((f) => ins.run(id, f.name, f.stored, f.size, req.user.id, req.user.full_name));
-        const r = db.prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL").run(id, req.user.id);
+        const r = db
+          .prepare("UPDATE document_signers SET signed_at = datetime('now'), signed_by_name = ? WHERE document_id = ? AND user_id = ? AND signed_at IS NULL")
+          .run(turn === req.user.id ? null : req.user.full_name, id, turn);
         if (!r.changes) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
         markSeen(req.user.id, id);
       });
       removeStored(replaced);
-      audit(req, 'document semnat', `#${id} ${doc.title}${viaMoldSign ? ' (MoldSign)' : ''}: ${saved.map((f) => f.name).join(', ')}`);
+      const behalf = turn === req.user.id ? '' : ` în locul: ${(db.prepare('SELECT full_name FROM users WHERE id = ?').get(turn) || {}).full_name || '#' + turn}`;
+      audit(req, 'document semnat', `#${id} ${doc.title}${viaMoldSign ? ' (MoldSign)' : ''}${behalf}: ${saved.map((f) => f.name).join(', ')}`);
     } catch (e) {
       removeStored(stored);
       throw e;
@@ -1496,7 +1603,7 @@ app.register(async (app) =>
   require('./mcp')(app, {
     db, fail, str, isId, sha, audit, UPLOAD_DIR, DATA_DIR, MAX_FILE, pdfsig, reminded,
     isBlocked, recordFail, mcpEnabled, localToday, accessClause, listDocuments, readDoc, createDocument, updateDocument,
-    currentSigner, notifySigners, markSeen, removeStored,
+    currentSigner, actorOf, notifySigners, markSeen, removeStored,
   })
 );
 
@@ -1530,6 +1637,33 @@ function pruneOldAudit() {
 }
 pruneOldAudit();
 setInterval(pruneOldAudit, 24 * 3600 * 1000).unref();
+
+// Termenul de semnare: cu o zi înainte și apoi în fiecare zi cât timp este depășit, persoana aflată la rând
+// (sau înlocuitorul ei) primește o reamintire prin e-mail, cel mult una pe zi, în timpul programului.
+function remindDeadlines() {
+  try {
+    const now = new Date();
+    const hour = now.getHours();
+    // doar în zilele lucrătoare, în timpul programului
+    if (hour < 9 || hour >= 18 || now.getDay() === 0 || now.getDay() === 6) return;
+    const today = localToday();
+    const due = db.prepare("SELECT id, title FROM documents WHERE sign_until <> '' AND sign_until <= ? AND sign_reminded <> ?").all(localDay(1), today);
+    for (const d of due) {
+      db.prepare('UPDATE documents SET sign_reminded = ? WHERE id = ?').run(today, d.id);
+      const turn = currentSigner(d.id);
+      if (!turn) continue;
+      notifySigners(null, d.id, [turn], { reminder: true })
+        .then((r) => {
+          if (r && r.sent.length) auditInsert.run('sistem', '', 'reamintire de semnare', `#${d.id} ${d.title}: ${r.sent.join(', ')}`);
+        })
+        .catch((e) => console.error('Reamintirea de semnare a eșuat:', e.message));
+    }
+  } catch (e) {
+    console.error('Verificarea termenelor de semnare a eșuat:', e.message);
+  }
+}
+setTimeout(remindDeadlines, 60000).unref();
+setInterval(remindDeadlines, 30 * 60000).unref();
 
 process.on('unhandledRejection', (e) => app.log.error(e));
 

@@ -16,9 +16,9 @@ const store = reactive({
   toast: null,
   dialog: null,
   editor: null, // fișierul deschis în editorul de documente: { fileId }
-  route: location.hash.slice(1) || 'documente',
+  route: location.hash.slice(1) || 'acasa',
 });
-window.addEventListener('hashchange', () => (store.route = location.hash.slice(1) || 'documente'));
+window.addEventListener('hashchange', () => (store.route = location.hash.slice(1) || 'acasa'));
 
 // La ieșire (sau la expirarea sesiunii) datele contului anterior dispar imediat din pagină,
 // ca următoarea persoană care se autentifică pe același calculator să nu le vadă nici o clipă.
@@ -347,6 +347,11 @@ const ICONS = {
   review: '<path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9h8M8 12h5"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>',
+  home: '<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  swap: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
   shield: '<path d="M12 3 4.5 6v6c0 4.4 3.2 7.8 7.5 9 4.3-1.2 7.5-4.6 7.5-9V6z"/>',
 };
@@ -410,6 +415,29 @@ const absenceNext = (userId) => {
   const t = store.today || today();
   return store.absences.find((a) => a.user_id === userId && a.from_date > t) || null;
 };
+// termenul de semnare: depășit (încă nesemnat de toți după termen) sau aproape (azi sau în următoarele 2 zile)
+const signOpen = (d) => d.signers.some((s) => !s.signed_at);
+const isOverdue = (d) => !!d.sign_until && signOpen(d) && d.sign_until < (store.today || today());
+const isDueSoon = (d) => !!d.sign_until && signOpen(d) && !isOverdue(d) && d.sign_until <= addDays(2);
+function dueText(d) {
+  if (!d.sign_until) return '';
+  const t = store.today || today();
+  if (d.sign_until < t) return 'termen depășit (' + fmtDay(d.sign_until) + ')';
+  if (d.sign_until === t) return 'termen: azi';
+  if (d.sign_until === addDays(1)) return 'termen: mâine';
+  return 'termen: ' + fmtDay(d.sign_until);
+}
+// steaua unui document: se schimbă imediat în pagină și revine dacă serverul refuză
+async function toggleFav(d) {
+  d.fav = !d.fav;
+  try {
+    await api('/api/documents/' + d.id + '/favorite', { method: 'POST', body: { on: d.fav } });
+  } catch (e) {
+    d.fav = !d.fav;
+    toast(e.message, true);
+  }
+}
+const userName = (id) => (store.users.find((u) => u.id === id) || {}).full_name || '';
 const absenceText = (a) => a.kind + (a.from_date === a.to_date ? ', ' + fmtDay(a.from_date) : ', ' + fmtDay(a.from_date) + ' – ' + fmtDay(a.to_date));
 const addDays = (n) => {
   const d = new Date(Date.now() + n * 86400000);
@@ -455,6 +483,7 @@ const DocForm = {
         userIds: d ? [...d.userIds] : [],
         signerIds: d ? d.signers.map((s) => s.id) : [],
         review_until: d && d.review_until ? d.review_until : addDays(7),
+        sign_until: d ? d.sign_until || '' : '',
         removeFileIds: [],
       },
     };
@@ -580,7 +609,9 @@ const DocForm = {
     },
     away(id) {
       const a = !this.hasSigned(id) && absenceNow(id);
-      return a ? a.kind.toLowerCase() + ' până la ' + fmtDay(a.to_date) : '';
+      if (!a) return '';
+      const sub = a.substitute_id && userName(a.substitute_id);
+      return a.kind.toLowerCase() + ' până la ' + fmtDay(a.to_date) + (sub ? '; semnează înlocuitorul, ' + sub : '; semnează la final');
     },
     dragLeave(e) {
       if (!e.currentTarget.contains(e.relatedTarget)) this.dragging = false;
@@ -609,7 +640,7 @@ const DocForm = {
       const fd = new FormData();
       if (!this.form.title.trim()) return this.go(0);
       if (this.needsReview && !this.form.review_until) return toast('Alegeți termenul de avizare.', true);
-      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
+      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], sign_until: this.needsSign ? this.form.sign_until : '', review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
       for (const f of this.newFiles) fd.append('files', f);
       this.busy = true;
       try {
@@ -646,7 +677,10 @@ const DocForm = {
               <label class="field span4"><span>Denumirea documentului *</span><input v-model="form.title" class="big-input" maxlength="300" required autofocus placeholder="ex. Ordin privind concediile anuale" /></label>
               <div class="field datefield span2">
                 <span><label for="doc-date">Data documentului{{ noDate ? '' : ' *' }}</label><label class="nodate"><input type="checkbox" v-model="noDate" /> fără dată</label></span>
-                <input id="doc-date" v-model="form.doc_date" type="date" :required="!noDate" :disabled="noDate" :title="noDate ? 'Pentru formulare, modele și alte documente fără dată' : ''" />
+                <input v-if="!noDate" id="doc-date" v-model="form.doc_date" type="date" required />
+                <button v-else id="doc-date" type="button" class="nodate-box" title="Reveniți la o dată" @click="noDate = false">
+                  <Icon name="file" /><span><b>Fără dată</b> · formular, model sau document de referință</span>
+                </button>
               </div>
               <label class="field span2"><span>Număr de înregistrare <span class="opt">(opțional)</span></span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
               <label class="field span4 mb0"><span>Descriere <span class="opt">(opțional)</span></span><textarea v-model="form.description" rows="4" maxlength="5000" placeholder="Pe scurt, despre ce este documentul — ajută la căutare"></textarea></label>
@@ -744,7 +778,7 @@ const DocForm = {
                 <ol v-if="form.signerIds.length" class="signorder chain">
                   <li v-for="(id, i) in form.signerIds" :key="id" :class="{ signed: hasSigned(id) }">
                     <span class="step">{{ i + 1 }}</span>
-                    <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }}; semnează la final)</span></span>
+                    <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }})</span></span>
                     <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
                     <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
                     <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
@@ -759,7 +793,10 @@ const DocForm = {
                     </button>
                   </div>
                 </div>
-                <p class="muted small hint">Fiecare semnatar semnează versiunea curentă, apoi vine rândul următorului. Cine este absent semnează la final. {{ mailHint }}</p>
+                <label class="field mt10 mb0 due-field"><span>Termen de semnare <span class="opt">(opțional)</span></span>
+                  <span class="input-btn"><input v-model="form.sign_until" type="date" :min="doc ? undefined : today()" /><button v-if="form.sign_until" type="button" class="btn link sm" @click="form.sign_until = ''">Fără termen</button></span>
+                </label>
+                <p class="muted small hint">Fiecare semnatar semnează versiunea curentă, apoi vine rândul următorului. Cine este absent semnează la final, iar dacă are înlocuitor, semnează înlocuitorul. <template v-if="form.sign_until">Cu o zi înainte de termen și apoi zilnic, persoana aflată la rând primește o reamintire.</template> {{ mailHint }}</p>
               </template>
               <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
             </section>
@@ -807,6 +844,7 @@ const DocForm = {
                   <li v-for="(id, i) in signers" :key="id"><span class="step">{{ i + 1 }}</span>{{ personName(id) }}</li>
                 </ol>
                 <p v-else class="muted small">Fără semnare.</p>
+                <div v-if="signers.length" class="rv-line"><Icon name="clock" />{{ form.sign_until ? 'Termen de semnare: ' + fmtDay(form.sign_until) : 'Fără termen de semnare' }}</div>
                 <div class="rv-line"><Icon name="review" />{{ needsReview ? 'Avizare până la ' + fmtDay(form.review_until) + ' inclusiv' : 'Fără avizare' }}</div>
               </div>
             </div>
@@ -1212,8 +1250,9 @@ const FileVersions = {
 
 const DocCard = {
   components: { FileLink, Modal, SignatureCheck, Icon, FileVersions },
-  props: { doc: Object, startOpen: Boolean },
-  emits: ['edit'],
+  // selectable: modul de selecție multiplă (bifa din stânga); selected: bifat
+  props: { doc: Object, startOpen: Boolean, selectable: Boolean, selected: Boolean },
+  emits: ['edit', 'select'],
   data() {
     return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null, versionsOf: null };
   },
@@ -1234,31 +1273,37 @@ const DocCard = {
     },
     fullDate() {
       const d = this.doc.doc_date;
-      if (!d) return 'Fără dată';
+      if (!d) return 'Fără dată (formular, model sau document de referință)';
       return Number(d.slice(8)) + ' ' + MONTHS[Number(d.slice(5, 7)) - 1] + ' ' + d.slice(0, 4);
     },
     // o singură stare pe rând, în ordinea importanței
     status() {
       const d = this.doc;
-      if (d.mySign === 'pending') return { label: 'De semnat de dvs.', cls: 'amber solid', icon: 'pen' };
+      if (d.mySign === 'pending') return { label: 'De semnat de dvs.', cls: isOverdue(d) ? 'red solid' : 'amber solid', icon: 'pen', title: dueText(d) ? 'De semnat de dvs. · ' + dueText(d) : '' };
       if (d.signers.length && d.signers.some((s) => !s.active && !s.signed_at)) return { label: 'Semnare blocată', cls: 'red' };
+      if (isOverdue(d)) return { label: 'Termen depășit', cls: 'red', icon: 'clock', title: 'Semnare ' + (d.signers.length - this.pending) + '/' + d.signers.length + ' · ' + dueText(d) };
       if (d.reviewOpen) return { label: 'Avizare · ' + fmtDay(d.review_until).slice(0, 5), cls: '', icon: 'review', title: 'În avizare până la ' + fmtDay(d.review_until) + ' inclusiv' };
-      if (d.signers.length && this.pending) return { label: 'Semnare ' + (d.signers.length - this.pending) + '/' + d.signers.length, cls: 'amber' };
+      if (d.signers.length && this.pending) return { label: 'Semnare ' + (d.signers.length - this.pending) + '/' + d.signers.length, cls: 'amber', icon: isDueSoon(d) ? 'clock' : '', title: dueText(d) ? 'Semnare în curs · ' + dueText(d) : '' };
       if (d.signers.length) return { label: 'Semnat', cls: 'green', icon: 'pen' };
       if (d.visibility === 'restricted') return { label: 'Acces limitat', cls: 'gray', icon: 'lock' };
       return null;
     },
-    hasActions() {
+    // semnez ca înlocuitor al persoanei aflate la rând
+    behalf() {
       const d = this.doc;
-      return d.unseen || d.canEdit || d.canDelete || this.signedPdfs.length > 0;
+      return d.mySign === 'pending' && d.signTurn !== store.me.id ? d.signers.find((s) => s.id === d.signTurn) || null : null;
+    },
+    overdue() {
+      return isOverdue(this.doc);
     },
     pending() {
       return this.doc.signers.filter((s) => !s.signed_at).length;
     },
-    // ordinea în care se semnează efectiv: cine a semnat, cei prezenți, apoi cei absenți
+    // ordinea în care se semnează efectiv: cine a semnat, cei prezenți (sau cu înlocuitor), apoi cei absenți
     chain() {
       const sig = this.doc.signers;
-      return [...sig.filter((s) => s.signed_at), ...sig.filter((s) => !s.signed_at && !s.absent), ...sig.filter((s) => !s.signed_at && s.absent)];
+      const skipped = (s) => s.absent && !s.absent.substitute_id;
+      return [...sig.filter((s) => s.signed_at), ...sig.filter((s) => !s.signed_at && !skipped(s)), ...sig.filter((s) => !s.signed_at && skipped(s))];
     },
     originals() {
       return this.doc.files.filter((f) => !f.signed_by_name);
@@ -1287,6 +1332,8 @@ const DocCard = {
   },
   methods: {
     fmtDay,
+    dueText,
+    toggleFav,
     // butonul din dreptul fișierului: serverul decide oricum dreptul real la deschidere
     inEditor(f) {
       return !!store.me.office && OFFICE_VIEW.includes(extName(f.name));
@@ -1304,11 +1351,18 @@ const DocCard = {
     visLabel,
     fmtDateTime,
     signerTitle(s) {
-      if (s.signed_at) return 'A semnat la ' + fmtDateTime(s.signed_at);
+      if (s.signed_at) return (s.signed_by_name ? 'Semnat de ' + s.signed_by_name + ' (înlocuitor), ' : 'A semnat la ') + fmtDateTime(s.signed_at);
       if (!s.active) return 'Cont dezactivat: lanțul de semnare este blocat';
-      const away = s.absent ? 'Absent până la ' + fmtDay(s.absent.to_date) : '';
+      const a = s.absent;
+      if (a && a.substitute_id) return (s.id === this.doc.signTurn ? 'La rând · semnează ' : 'Absent · înlocuit de ') + a.substitute_name;
+      const away = a ? 'Absent până la ' + fmtDay(a.to_date) : '';
       if (s.id === this.doc.signTurn) return away ? away + ' · este la rând' : 'Este la rând';
       return away || 'Așteaptă';
+    },
+    signerHint(s) {
+      const a = !s.signed_at && s.absent;
+      if (!a) return null;
+      return 'Persoană absentă: ' + a.kind.toLowerCase() + ' până la ' + fmtDay(a.to_date) + '. ' + (a.substitute_id ? 'Semnează în locul ei ' + a.substitute_name + '.' : 'Semnează după ceilalți, când revine.');
     },
     // serverul marchează documentul ca văzut când se deschide un fișier; reîmprospătăm lista puțin mai târziu
     opened() {
@@ -1330,7 +1384,7 @@ const DocCard = {
       if (files.length > 10) return toast('Cel mult 10 fișiere la o încărcare.', true);
       const ok = await ask({
         title: 'Încărcați versiunea semnată?',
-        message: '„' + names + '” va fi înregistrat ca versiune semnată de dvs. După încărcare, documentul trece la următorul semnatar.',
+        message: '„' + names + '” va fi înregistrat ca versiune semnată de dvs.' + (this.behalf ? ', în locul lui ' + this.behalf.name : '') + '. După încărcare, documentul trece la următorul semnatar.',
         okLabel: 'Încarcă',
       });
       if (!ok) return;
@@ -1415,13 +1469,17 @@ const DocCard = {
     },
   },
   template: /*html*/ `
-    <article class="dcard" :class="{ unseen: doc.unseen, open, turn: doc.mySign === 'pending' }">
-      <button type="button" class="drow" :aria-expanded="open ? 'true' : 'false'" @click="open = !open">
-        <span class="d-date"><b>{{ docDay(doc) }}</b><span>{{ docMon(doc) }}</span></span>
+    <article class="dcard" :class="{ unseen: doc.unseen, open, turn: doc.mySign === 'pending', late: overdue && doc.mySign === 'pending', selmode: selectable, picked: selected }">
+      <label v-if="selectable" class="dpick" :title="selected ? 'Deselectează' : 'Selectează'"><input type="checkbox" :checked="selected" @change="$emit('select', doc)" :aria-label="'Selectează ' + doc.title" /></label>
+      <button type="button" class="drow" :aria-expanded="open ? 'true' : 'false'" @click="selectable ? $emit('select', doc) : (open = !open)">
+        <span v-if="doc.doc_date" class="d-date"><b>{{ docDay(doc) }}</b><span>{{ docMon(doc) }}</span></span>
+        <span v-else class="d-date nodate" title="Document fără dată (formular, model, document de referință)"><Icon name="file" /><span>fără dată</span></span>
         <span class="d-main">
-          <span class="d-title" :title="doc.title"><i v-if="doc.unseen" class="d-dot" title="Document nou"></i>{{ doc.title }}</span>
+          <span class="d-title" :title="doc.title"><i v-if="doc.unseen" class="d-dot" title="Document nou"></i><Icon v-if="doc.fav" name="star" class="d-star" />{{ doc.title }}</span>
           <span class="d-sub">
-            <span class="d-nr">{{ doc.number ? 'nr. ' + doc.number : 'fără număr' }}</span>
+            <span v-if="doc.number" class="d-nr">nr. {{ doc.number }}</span>
+            <span v-if="!doc.doc_date" class="d-kind">formular / model</span>
+            <span v-if="doc.sign_until && doc.signers.some((s) => !s.signed_at)" class="d-due" :class="{ late: overdue }"><Icon name="clock" />{{ dueText(doc) }}</span>
             <template v-for="id in shownTags" :key="id"><span class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span></template>
             <span v-if="hiddenTags" class="chip more">+{{ hiddenTags }}</span>
           </span>
@@ -1461,6 +1519,7 @@ const DocCard = {
               <dt>Număr</dt><dd>{{ doc.number || '—' }}</dd>
               <dt>Adăugat de</dt><dd>{{ doc.author || '—' }}</dd>
               <dt>Acces</dt><dd>{{ visLabel(doc) }}</dd>
+              <template v-if="doc.sign_until"><dt>Termen</dt><dd :class="{ 'warn-text': overdue }">{{ fmtDay(doc.sign_until) }}<template v-if="overdue"> · depășit</template></dd></template>
               <template v-if="doc.review_until"><dt>Avizare</dt><dd>{{ doc.reviewOpen ? 'deschisă până la ' + fmtDay(doc.review_until) + ' inclusiv' : 'încheiată (termen ' + fmtDay(doc.review_until) + ')' }}</dd></template>
               <dt>Etichete</dt>
               <dd>
@@ -1477,12 +1536,14 @@ const DocCard = {
           <ol class="stepper">
             <li v-for="(s, i) in chain" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at, away: s.absent && !s.signed_at }">
               <span class="st-dot">{{ s.signed_at ? '✓' : i + 1 }}</span>
-              <span class="st-txt" :title="s.absent && !s.signed_at ? 'Persoană absentă: ' + s.absent.kind.toLowerCase() + ' până la ' + fmtDay(s.absent.to_date) + '. Semnează după ceilalți, când revine.' : null"><b>{{ s.name }}</b><span class="small">{{ signerTitle(s) }}</span></span>
+              <span class="st-txt" :title="signerHint(s) || signerTitle(s)"><b>{{ s.name }}</b><span class="small">{{ signerTitle(s) }}</span></span>
             </li>
           </ol>
           <div v-if="doc.mySign === 'pending'" class="myturn">
             <div class="myturn-txt">
-              <b>Este rândul dvs. să semnați.</b>
+              <b v-if="behalf">Semnați în locul lui {{ behalf.name }}<template v-if="behalf.absent">, absent până la {{ fmtDay(behalf.absent.to_date) }}</template>.</b>
+              <b v-else>Este rândul dvs. să semnați.</b>
+              <span v-if="doc.sign_until" class="small" :class="overdue ? 'warn-text' : 'muted'"><Icon name="clock" class="inline-ico" />{{ dueText(doc) }}</span>
               <span class="muted small">{{ canToken ? 'Semnați cu tokenul prin MoldSign sau încărcați fișierul semnat în altă aplicație.' : 'Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.' }}</span>
             </div>
             <div class="myturn-act">
@@ -1493,8 +1554,9 @@ const DocCard = {
           </div>
         </section>
 
-        <footer v-if="hasActions" class="dfoot">
+        <footer class="dfoot">
           <div class="dfoot-side">
+            <button type="button" class="btn sm fav-btn" :class="{ on: doc.fav }" :aria-pressed="doc.fav ? 'true' : 'false'" @click="toggleFav(doc)"><Icon name="star" />{{ doc.fav ? 'Favorit' : 'Adaugă la favorite' }}</button>
             <button v-if="signedPdfs.length" type="button" class="btn sm" @click="verifying = signedPdfs">Verifică semnăturile</button>
             <button v-if="doc.canEdit && pending && store.me.mailEnabled" type="button" class="btn sm" :disabled="reminding" @click="remind">Retrimite e-mailul</button>
           </div>
@@ -1538,14 +1600,46 @@ function writeOpenCats(ids) {
 
 const DocsView = {
   components: { DocForm, DocCard, Icon, EmptyState },
-  data: () => ({ sel: { type: 'all', id: null }, year: '', q: '', editing: undefined, openCats: readOpenCats() }),
+  data: () => ({ sel: { type: 'all', id: null }, year: '', q: '', editing: undefined, openCats: readOpenCats(), selecting: false, picked: [] }),
+  // tasta „/” duce la căutare (când nu se scrie deja într-un câmp și nu este deschisă o fereastră)
+  mounted() {
+    this.slash = (e) => {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || modalStack.length) return;
+      if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+      e.preventDefault();
+      this.$refs.search.focus();
+    };
+    document.addEventListener('keydown', this.slash);
+  },
+  unmounted() {
+    document.removeEventListener('keydown', this.slash);
+  },
   computed: {
     store: () => store,
     docs: () => store.docs,
     canAdd: () => store.me.role !== 'user',
     tags: () => tagIndex(),
+    // anii, cu numărul de documente din fiecare; documentele fără dată au propria opțiune
     years() {
-      return [...new Set(this.docs.filter((d) => d.doc_date).map((d) => d.doc_date.slice(0, 4)))];
+      const n = new Map();
+      for (const d of this.docs) if (d.doc_date) n.set(d.doc_date.slice(0, 4), (n.get(d.doc_date.slice(0, 4)) || 0) + 1);
+      return [...n].map(([year, count]) => ({ year, count }));
+    },
+    undatedCount() {
+      return this.docs.filter((d) => !d.doc_date).length;
+    },
+    favCount() {
+      return this.docs.filter((d) => d.fav).length;
+    },
+    pickedDocs() {
+      const ids = new Set(this.picked);
+      return this.docs.filter((d) => ids.has(d.id));
+    },
+    pickedFiles() {
+      return this.pickedDocs.reduce((n, d) => n + d.files.length, 0);
+    },
+    allPicked() {
+      return this.filtered.length > 0 && this.filtered.every((d) => this.picked.includes(d.id));
     },
     counts() {
       const tag = {};
@@ -1564,11 +1658,12 @@ const DocsView = {
     filtered() {
       const q = this.q.trim().toLowerCase();
       return this.docs.filter((d) => {
-        if (this.year && !d.doc_date.startsWith(this.year)) return false;
+        if (this.year === 'none' ? d.doc_date : this.year && !d.doc_date.startsWith(this.year)) return false;
+        if (this.sel.type === 'fav' && !d.fav) return false;
         if (this.sel.type === 'tag' && !d.tagIds.includes(this.sel.id)) return false;
         if (this.sel.type === 'cat' && !d.tagIds.some((id) => (this.tags.get(id) || {}).category_id === this.sel.id)) return false;
         if (!q) return true;
-        const hay = [d.title, d.number, ...d.files.map((f) => f.name), ...d.tagIds.map((id) => (this.tags.get(id) || {}).name)];
+        const hay = [d.title, d.number, d.description, d.author, ...d.files.map((f) => f.name), ...d.tagIds.map((id) => (this.tags.get(id) || {}).name)];
         return hay.join(' ').toLowerCase().includes(q);
       });
     },
@@ -1579,7 +1674,7 @@ const DocsView = {
       for (const d of this.filtered) {
         const key = d.doc_date.slice(0, 7);
         if (!out.length || out[out.length - 1].key !== key) {
-          out.push({ key, label: key ? MONTHS[Number(key.slice(5)) - 1] + ' ' + key.slice(0, 4) : 'Fără dată (formulare, modele)', docs: [] });
+          out.push({ key, label: key ? MONTHS[Number(key.slice(5)) - 1] + ' ' + key.slice(0, 4) : 'Fără dată', hint: key ? '' : 'formulare, modele, documente de referință', docs: [] });
         }
         out[out.length - 1].docs.push(d);
       }
@@ -1597,6 +1692,42 @@ const DocsView = {
       else this.openCats.splice(i, 1);
       writeOpenCats(this.openCats);
     },
+    clearFilters() {
+      this.q = '';
+      this.year = '';
+      this.sel = { type: 'all', id: null };
+    },
+    startSelect() {
+      this.selecting = !this.selecting;
+      this.picked = [];
+    },
+    togglePick(d) {
+      const i = this.picked.indexOf(d.id);
+      if (i < 0) this.picked.push(d.id);
+      else this.picked.splice(i, 1);
+    },
+    pickAll() {
+      this.picked = this.allPicked ? [] : this.filtered.map((d) => d.id);
+    },
+    // arhiva se descarcă direct de browser (fără să treacă prin memoria paginii)
+    downloadZip() {
+      if (!this.pickedFiles) return toast('Documentele alese nu au fișiere.', true);
+      const a = document.createElement('a');
+      a.href = '/api/documents/zip?ids=' + this.picked.join(',');
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('Arhiva se descarcă: ' + plural(this.picked.length, 'document', 'documente') + ', ' + plural(this.pickedFiles, 'fișier', 'fișiere') + '.');
+      setTimeout(() => loadDocs().catch(() => {}), 2500);
+    },
+    async seenPicked() {
+      const ok = await run(async () => {
+        await api('/api/documents/seen-many', { method: 'POST', body: { ids: this.picked } });
+        await loadDocs();
+      }, 'Documentele alese au fost marcate ca văzute.');
+      if (ok) this.picked = [];
+    },
   },
   template: /*html*/ `
     <div class="page-head">
@@ -1604,13 +1735,20 @@ const DocsView = {
         <h1>Documente</h1>
         <p class="muted page-sub">{{ filtered.length === docs.length ? plural(docs.length, 'document', 'documente') : filtered.length + ' din ' + plural(docs.length, 'document', 'documente') }}</p>
       </div>
-      <button v-if="canAdd" class="btn primary" @click="editing = null">+ Document nou</button>
+      <div class="head-actions">
+        <button v-if="docs.length" class="btn" :class="{ on: selecting }" :aria-pressed="selecting ? 'true' : 'false'" @click="startSelect"><Icon name="check" />{{ selecting ? 'Gata' : 'Selectează' }}</button>
+        <button v-if="canAdd" class="btn primary" @click="editing = null">+ Document nou</button>
+      </div>
     </div>
     <div class="docs">
       <aside class="card side">
         <button class="side-item" :class="{ on: sel.type === 'all' }" @click="sel = { type: 'all', id: null }">
           <span>Toate documentele</span><span class="count">{{ docs.length }}</span>
         </button>
+        <button class="side-item side-fav" :class="{ on: sel.type === 'fav' }" @click="sel = { type: 'fav', id: null }" title="Documentele marcate cu stea">
+          <span><Icon name="star" />Favorite</span><span class="count">{{ favCount }}</span>
+        </button>
+        <div class="side-sep"></div>
         <template v-for="c in store.categories" :key="c.id">
           <div class="side-catrow" :class="{ open: openCats.includes(c.id) }">
             <button class="side-caret" :disabled="!c.tags.length" :aria-expanded="openCats.includes(c.id) ? 'true' : 'false'" :aria-label="(openCats.includes(c.id) ? 'Restrânge ' : 'Extinde ') + c.name" :title="c.tags.length ? (openCats.includes(c.id) ? 'Restrânge' : 'Arată etichetele') : 'Fără etichete'" @click="toggleCat(c.id)"><Icon name="chevron" /></button>
@@ -1628,16 +1766,29 @@ const DocsView = {
 
       <section>
         <div class="toolbar">
-          <input v-model="q" type="search" placeholder="Caută după denumire, număr, fișier, etichetă…" />
-          <select v-model="year" aria-label="Anul">
-            <option value="">Toți anii</option>
-            <option v-for="y in years" :key="y">{{ y }}</option>
+          <span class="searchbox">
+            <input ref="search" v-model="q" type="search" placeholder="Caută: denumire, număr, autor, fișier, etichetă…" title="Scurtătură: tasta /  ·  Esc golește căutarea" @keydown.esc="q = ''" />
+            <kbd v-if="!q" aria-hidden="true">/</kbd>
+          </span>
+          <select v-model="year" aria-label="Anul" :class="{ active: year }">
+            <option value="">Toți anii ({{ docs.length }})</option>
+            <option v-for="y in years" :key="y.year" :value="y.year">{{ y.year }} ({{ y.count }})</option>
+            <option v-if="undatedCount" value="none">Fără dată ({{ undatedCount }})</option>
           </select>
         </div>
 
+        <div v-if="selecting" class="selbar" role="region" aria-label="Documente selectate">
+          <label class="check"><input type="checkbox" :checked="allPicked" @change="pickAll" />{{ allPicked ? 'Deselectează tot' : 'Selectează tot (' + filtered.length + ')' }}</label>
+          <span class="selbar-n">{{ picked.length ? plural(picked.length, 'document ales', 'documente alese') : 'Bifați documentele dorite' }}</span>
+          <span class="selbar-act">
+            <button class="btn sm" :disabled="!picked.length" @click="seenPicked">Marchează ca văzute</button>
+            <button class="btn sm primary" :disabled="!picked.length" @click="downloadZip"><Icon name="download" />Descarcă ZIP</button>
+          </span>
+        </div>
         <template v-if="store.docsLoaded && !groups.length">
-          <EmptyState v-if="docs.length" art="search" title="Niciun document găsit" text="Niciun document nu corespunde căutării sau filtrelor alese.">
-            <button class="btn" @click="(q = ''), (year = ''), (sel = { type: 'all', id: null })">Șterge filtrele</button>
+          <EmptyState v-if="sel.type === 'fav' && !favCount" art="docs" title="Încă nu aveți favorite" text="Deschideți un document și apăsați „Adaugă la favorite”: formularele și regulamentele folosite des rămân la îndemână aici și pe pagina Acasă." />
+          <EmptyState v-else-if="docs.length" art="search" title="Niciun document găsit" text="Niciun document nu corespunde căutării sau filtrelor alese.">
+            <button class="btn" @click="clearFilters">Șterge filtrele</button>
           </EmptyState>
           <EmptyState v-else art="docs" title="Încă nu există documente" :text="canAdd ? 'Adăugați primul document; formularul vă ghidează pas cu pas.' : 'Documentele la care aveți acces vor apărea aici.'">
             <button v-if="canAdd" class="btn primary" @click="editing = null">+ Document nou</button>
@@ -1645,10 +1796,118 @@ const DocsView = {
         </template>
         <div v-if="groups.length" class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
         <template v-for="g in groups" :key="g.key">
-          <div class="month">{{ g.label }}</div>
-          <DocCard v-for="d in g.docs" :key="d.id" :doc="d" @edit="editing = $event" />
+          <div class="month" :class="{ undated: !g.key }"><Icon v-if="!g.key" name="file" />{{ g.label }}<span v-if="g.hint" class="month-hint">{{ g.hint }}</span><span class="month-count">{{ g.docs.length }}</span></div>
+          <DocCard v-for="d in g.docs" :key="d.id" :doc="d" :selectable="selecting" :selected="picked.includes(d.id)" @select="togglePick" @edit="editing = $event" />
         </template>
       </section>
+    </div>
+    <DocForm v-if="editing !== undefined" :doc="editing" @close="editing = undefined" @saved="editing = undefined" />`,
+};
+
+// documentele cu termen de semnare primele (cel mai apropiat termen întâi), apoi celelalte
+const byDeadline = (list) => [...list].sort((a, b) => (a.sign_until || '9999').localeCompare(b.sign_until || '9999'));
+
+// ---------- acasă ----------
+// Pagina de start: ce are de făcut utilizatorul azi, documentele favorite și cine lipsește.
+const HomeView = {
+  components: { DocForm, DocCard, Icon, EmptyState },
+  data: () => ({ editing: undefined }),
+  computed: {
+    store: () => store,
+    firstName: () => (store.me.full_name || '').split(' ')[0],
+    todayLong() {
+      const d = new Date();
+      const days = ['duminică', 'luni', 'marți', 'miercuri', 'joi', 'vineri', 'sâmbătă'];
+      return days[d.getDay()] + ', ' + d.getDate() + ' ' + MONTHS[d.getMonth()].toLowerCase() + ' ' + d.getFullYear();
+    },
+    hello() {
+      const h = new Date().getHours();
+      return h < 11 ? 'Bună dimineața' : h < 18 ? 'Bună ziua' : 'Bună seara';
+    },
+    toSign: () => byDeadline(store.docs.filter((d) => d.mySign === 'pending')),
+    overdueMine() {
+      return this.toSign.filter(isOverdue).length;
+    },
+    fresh: () => store.docs.filter((d) => d.unseen && d.mySign !== 'pending'),
+    favs: () => store.docs.filter((d) => d.fav),
+    // documentele mele (ca autor) aflate încă la semnare
+    // (fără cele pe care le am chiar eu de semnat, care apar deja mai sus)
+    mine: () => byDeadline(store.docs.filter((d) => d.created_by === store.me.id && d.mySign !== 'pending' && d.signers.some((s) => !s.signed_at))),
+    reviews: () => store.docs.filter((d) => d.reviewOpen).sort((a, b) => a.review_until.localeCompare(b.review_until)),
+    away() {
+      const t = store.today || today();
+      return store.absences
+        .filter((a) => a.from_date <= t && a.to_date >= t)
+        .map((a) => ({ ...a, name: userName(a.user_id), sub: a.substitute_id ? userName(a.substitute_id) : '' }))
+        .filter((a) => a.name)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+    tiles() {
+      return [
+        { key: 'sign', n: this.toSign.length, label: 'de semnat de dvs.', sub: this.overdueMine ? this.overdueMine + ' cu termen depășit' : '', cls: this.overdueMine ? 'red' : this.toSign.length ? 'amber' : '', href: '#notificari', icon: 'pen' },
+        { key: 'new', n: this.fresh.length, label: this.fresh.length === 1 ? 'document nou' : 'documente noi', sub: 'încă nedeschise', cls: this.fresh.length ? 'blue' : '', href: '#notificari', icon: 'file' },
+        { key: 'rev', n: this.reviews.length, label: this.reviews.length === 1 ? 'avizare deschisă' : 'avizări deschise', sub: this.reviews.length ? 'prima se închide ' + fmtDay(this.reviews[0].review_until) : '', cls: '', href: '#documente', icon: 'review' },
+        { key: 'away', n: this.away.length, label: this.away.length === 1 ? 'coleg absent azi' : 'colegi absenți azi', sub: '', cls: '', href: '#angajati', icon: 'calendar' },
+      ];
+    },
+  },
+  methods: { fmtDay, plural, initials, avatarStyle },
+  template: /*html*/ `
+    <div class="page-head home-head">
+      <div>
+        <h1>{{ hello }}, {{ firstName }}</h1>
+        <p class="muted page-sub">Azi este {{ todayLong }}.</p>
+      </div>
+      <a href="#documente" class="btn"><Icon name="list" />Toate documentele</a>
+    </div>
+    <div class="tiles">
+      <a v-for="t in tiles" :key="t.key" :href="t.href" class="tile card" :class="t.cls">
+        <span class="tile-ico"><Icon :name="t.icon" /></span>
+        <span class="tile-txt"><b>{{ t.n }}</b><span>{{ t.label }}</span><small v-if="t.sub">{{ t.sub }}</small></span>
+      </a>
+    </div>
+    <div class="home">
+      <div class="home-main">
+        <section class="home-sec">
+          <div class="month">De semnat de dvs.<span class="month-count">{{ toSign.length }}</span></div>
+          <DocCard v-for="d in toSign.slice(0, 6)" :key="d.id" :doc="d" @edit="editing = $event" />
+          <a v-if="toSign.length > 6" href="#notificari" class="home-more">Toate cele {{ toSign.length }} documente de semnat →</a>
+          <p v-if="!toSign.length" class="home-empty"><Icon name="check" />Nu aveți nimic de semnat. Sunteți la zi.</p>
+        </section>
+        <section v-if="mine.length" class="home-sec">
+          <div class="month">Documentele dvs. în curs de semnare<span class="month-count">{{ mine.length }}</span></div>
+          <DocCard v-for="d in mine.slice(0, 5)" :key="d.id" :doc="d" @edit="editing = $event" />
+        </section>
+        <section class="home-sec">
+          <div class="month">Favorite<span class="month-count">{{ favs.length }}</span></div>
+          <DocCard v-for="d in favs.slice(0, 8)" :key="d.id" :doc="d" @edit="editing = $event" />
+          <a v-if="favs.length > 8" href="#documente" class="home-more">Toate favoritele, în pagina Documente →</a>
+          <p v-if="!favs.length" class="home-empty"><Icon name="star" />Marcați cu stea formularele și documentele folosite des („Adaugă la favorite”, în cardul documentului); apar aici.</p>
+        </section>
+        <section v-if="fresh.length" class="home-sec">
+          <div class="month">Documente noi<span class="month-count">{{ fresh.length }}</span></div>
+          <DocCard v-for="d in fresh.slice(0, 5)" :key="d.id" :doc="d" @edit="editing = $event" />
+          <a v-if="fresh.length > 5" href="#notificari" class="home-more">Toate documentele noi →</a>
+        </section>
+      </div>
+      <aside class="home-side">
+        <section class="card side-box">
+          <h3><Icon name="calendar" />Absenți azi</h3>
+          <ul v-if="away.length" class="away-list">
+            <li v-for="a in away" :key="a.id">
+              <span class="avatar sm" :style="avatarStyle(a.name)">{{ initials(a.name) }}</span>
+              <span class="who-txt"><b>{{ a.name }}</b><span class="muted small">{{ a.kind }} · până la {{ fmtDay(a.to_date) }}</span><span v-if="a.sub" class="small sub-line"><Icon name="swap" />înlocuit de {{ a.sub }}</span></span>
+            </li>
+          </ul>
+          <p v-else class="muted small">Toți colegii sunt prezenți.</p>
+        </section>
+        <section v-if="reviews.length" class="card side-box">
+          <h3><Icon name="review" />Avizări deschise</h3>
+          <ul class="rev-list">
+            <li v-for="d in reviews.slice(0, 6)" :key="d.id"><span class="rev-title" :title="d.title">{{ d.title }}</span><span class="muted small">până la {{ fmtDay(d.review_until) }}</span></li>
+          </ul>
+        </section>
+      </aside>
     </div>
     <DocForm v-if="editing !== undefined" :doc="editing" @close="editing = undefined" @saved="editing = undefined" />`,
 };
@@ -1659,7 +1918,7 @@ const InboxView = {
   components: { DocForm, DocCard, EmptyState },
   data: () => ({ editing: undefined, show: 'all' }),
   computed: {
-    toSign: () => store.docs.filter((d) => d.mySign === 'pending'),
+    toSign: () => byDeadline(store.docs.filter((d) => d.mySign === 'pending')),
     fresh: () => store.docs.filter((d) => d.unseen && d.mySign !== 'pending'),
     total() {
       return this.toSign.length + this.fresh.length;
@@ -1698,7 +1957,7 @@ const InboxView = {
         <EmptyState v-if="!groups.length" art="inbox" :title="total ? 'Nimic aici' : 'Sunteți la zi'" :text="total ? 'Nicio notificare în această categorie.' : 'Nu aveți documente de semnat sau nevăzute.'" />
         <div v-else class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
         <template v-for="g in groups" :key="g.key">
-          <div class="month">{{ g.label }} ({{ g.docs.length }})</div>
+          <div class="month">{{ g.label }}<span class="month-count">{{ g.docs.length }}</span></div>
           <DocCard v-for="d in g.docs" :key="d.id" :doc="d" @edit="editing = $event" />
         </template>
       </section>
@@ -2124,11 +2383,20 @@ function unitPath(unitId) {
 const OrgPerson = {
   components: { Icon },
   props: { p: Object, hit: Boolean },
+  computed: {
+    // absența de azi: un inel pe avatar și un rând sub funcție
+    away() {
+      const a = absenceNow(this.p.id);
+      if (!a) return null;
+      const sub = a.substitute_id ? userName(a.substitute_id) : '';
+      return { text: 'Absent până la ' + fmtDay(a.to_date), title: a.kind + ', ' + fmtDay(a.from_date) + ' – ' + fmtDay(a.to_date) + (sub ? ' · înlocuit de ' + sub : '') };
+    },
+  },
   methods: { initials, avatarStyle },
   template: /*html*/ `
-    <li class="person" :class="{ hit }">
+    <li class="person" :class="{ hit, away: !!away }">
       <span class="avatar" :style="avatarStyle(p.full_name)">{{ initials(p.full_name) }}</span>
-      <div class="person-txt"><b :title="p.full_name">{{ p.full_name }}</b><span class="muted small" :title="p.position">{{ p.position || '—' }}</span></div>
+      <div class="person-txt"><b :title="p.full_name">{{ p.full_name }}</b><span class="muted small" :title="p.position">{{ p.position || '—' }}</span><span v-if="away" class="person-away" :title="away.title">{{ away.text }}</span></div>
       <a v-if="p.phone" class="person-mail" :href="'tel:' + p.phone.replace(/[^0-9+]/g, '')" :title="'Telefon: ' + p.phone" :aria-label="'Sună: ' + p.full_name"><Icon name="phone" /></a>
       <a v-if="p.email" class="person-mail" :href="'mailto:' + p.email" :title="'Scrie-i un e-mail: ' + p.email" :aria-label="'E-mail către ' + p.full_name"><Icon name="mail" /></a>
     </li>`,
@@ -2828,28 +3096,35 @@ const AbsenceForm = {
   props: { user: Object },
   emits: ['close'],
   data() {
-    return { busy: false, form: { kind: store.absenceKinds[0] || '', from_date: store.today || today(), to_date: store.today || today(), note: '' } };
+    return { busy: false, form: { kind: store.absenceKinds[0] || '', from_date: store.today || today(), to_date: store.today || today(), note: '', substitute_id: '' } };
   },
   computed: {
     store: () => store,
     list() {
       return store.absences.filter((a) => a.user_id === this.user.id);
     },
+    // înlocuitorul: orice alt angajat activ, cei din aceeași subdiviziune primii
+    candidates() {
+      const same = (u) => (u.unit_id && u.unit_id === this.user.unit_id ? 0 : 1);
+      return store.users.filter((u) => u.id !== this.user.id).sort((a, b) => same(a) - same(b) || a.full_name.localeCompare(b.full_name));
+    },
   },
   methods: {
     fmtDay,
+    userName,
     current: (a) => a.from_date <= (store.today || today()),
     async submit() {
       this.busy = true;
       let r;
       const ok = await run(async () => {
-        r = await api('/api/absences', { method: 'POST', body: { ...this.form, user_id: this.user.id } });
+        r = await api('/api/absences', { method: 'POST', body: { ...this.form, substitute_id: this.form.substitute_id || null, user_id: this.user.id } });
         await loadShared();
       });
       this.busy = false;
       if (!ok) return;
       toast(r.movedDocs ? 'Absența a fost adăugată. ' + plural(r.movedDocs, 'document a trecut', 'documente au trecut') + ' la următorul semnatar.' : 'Absența a fost adăugată.');
       this.form.note = '';
+      this.form.substitute_id = '';
       if (store.docsLoaded) loadDocs().catch(() => {});
     },
     async remove(a) {
@@ -2867,7 +3142,7 @@ const AbsenceForm = {
       <ul v-if="list.length" class="abs-list">
         <li v-for="a in list" :key="a.id" :class="{ now: current(a) }">
           <Icon name="calendar" />
-          <span class="abs-txt"><b>{{ a.kind }}</b><span class="small">{{ fmtDay(a.from_date) }} – {{ fmtDay(a.to_date) }}{{ current(a) ? ' · în curs' : ' · programată' }}</span><span v-if="a.note" class="muted small">{{ a.note }}</span></span>
+          <span class="abs-txt"><b>{{ a.kind }}</b><span class="small">{{ fmtDay(a.from_date) }} – {{ fmtDay(a.to_date) }}{{ current(a) ? ' · în curs' : ' · programată' }}</span><span v-if="a.substitute_id" class="small sub-line"><Icon name="swap" />înlocuit de {{ userName(a.substitute_id) || '—' }}</span><span v-if="a.note" class="muted small">{{ a.note }}</span></span>
           <button type="button" class="icon-btn danger" title="Anulează absența" aria-label="Anulează absența" @click="remove(a)"><Icon name="trash" /></button>
         </li>
       </ul>
@@ -2882,8 +3157,14 @@ const AbsenceForm = {
         <label class="field"><span>De la *</span><input v-model="form.from_date" type="date" required /></label>
         <label class="field"><span>Până la (inclusiv) *</span><input v-model="form.to_date" type="date" :min="form.from_date" required /></label>
       </div>
-      <label class="field"><span>Observație (o vede doar administratorul)</span><input v-model="form.note" maxlength="300" placeholder="de ex. înlocuit de …" /></label>
-      <p class="muted small hint">Cât timp este absentă, persoana trece la finalul ordinii de semnare, iar ceilalți semnatari nu o mai așteaptă. Colegii văd în listă că este absentă.</p>
+      <label class="field"><span>Înlocuitor <span class="opt">(opțional)</span></span>
+        <select v-model="form.substitute_id">
+          <option value="">Fără înlocuitor: semnează la întoarcere</option>
+          <option v-for="u in candidates" :key="u.id" :value="u.id">{{ u.full_name }}{{ u.position ? ' · ' + u.position : '' }}</option>
+        </select>
+      </label>
+      <label class="field"><span>Observație <span class="opt">(o vede doar administratorul)</span></span><input v-model="form.note" maxlength="300" placeholder="de ex. ordinul de concediu nr. …" /></label>
+      <p class="muted small hint">{{ form.substitute_id ? 'Pe durata absenței, ' + userName(Number(form.substitute_id)) + ' vede documentele pe care ' + user.full_name + ' le are de semnat și le semnează în locul acestuia; ordinea de semnare nu se schimbă.' : 'Fără înlocuitor, persoana trece la finalul ordinii de semnare, iar ceilalți semnatari nu o mai așteaptă.' }} Colegii văd în listă că este absentă.</p>
     </Modal>`,
 };
 
@@ -2924,6 +3205,7 @@ const PeopleView = {
     role: (r) => ROLES[r],
     absenceNow,
     absenceNext,
+    userName,
     fmtDay,
     tel: (p) => 'tel:' + String(p).replace(/[^0-9+]/g, ''),
     async load() {
@@ -2994,7 +3276,7 @@ const PeopleView = {
               <span class="who">
                 <span class="avatar sm" :style="avatarStyle(u.full_name)">{{ initials(u.full_name) }}</span>
                 <span class="who-txt"><b>{{ u.full_name }}</b><span class="muted small">{{ u.position || '—' }}</span>
-                  <span v-if="absenceNow(u.id)" class="away-badge" :title="absenceNow(u.id).kind + ', ' + fmtDay(absenceNow(u.id).from_date) + ' – ' + fmtDay(absenceNow(u.id).to_date)"><Icon name="calendar" />Absent până la {{ fmtDay(absenceNow(u.id).to_date) }}</span>
+                  <span v-if="absenceNow(u.id)" class="away-badge" :title="absenceNow(u.id).kind + ', ' + fmtDay(absenceNow(u.id).from_date) + ' – ' + fmtDay(absenceNow(u.id).to_date) + (absenceNow(u.id).substitute_id ? ' · înlocuit de ' + userName(absenceNow(u.id).substitute_id) : '')"><Icon name="calendar" />Absent până la {{ fmtDay(absenceNow(u.id).to_date) }}</span>
                   <span v-else-if="absenceNext(u.id)" class="away-badge next"><Icon name="calendar" />{{ absenceNext(u.id).kind }} din {{ fmtDay(absenceNext(u.id).from_date) }}</span>
                 </span>
               </span>
@@ -3168,7 +3450,7 @@ const Watermark = {
 
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens, Watermark, Icon },
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, HomeView, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens, Watermark, Icon },
   data: () => ({ pass: null, passBusy: false, bump: false, ai: false, menu: false }),
   // meniul contului se închide la un clic în afara lui sau cu Escape
   mounted() {
@@ -3188,7 +3470,7 @@ const App = {
     roleName: () => ROLES[store.me.role] || '',
     // [adresă, denumire, componentă]; notificările au propriul buton (cutia poștală) în dreapta barei
     routes() {
-      const items = [['documente', 'Documente', 'DocsView'], ['angajati', 'Angajați', 'PeopleView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
+      const items = [['acasa', 'Acasă', 'HomeView'], ['documente', 'Documente', 'DocsView'], ['angajati', 'Angajați', 'PeopleView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
       if (isAdmin()) items.push(['categorii', 'Categorii', 'CategoriesView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
       return items;
     },
@@ -3199,7 +3481,7 @@ const App = {
       // adresele vechi: „#backup” duce la Setări (unde se află și copia de rezervă), „#utilizatori” la Angajați
       const route = { backup: 'setari', utilizatori: 'angajati' }[store.route] || store.route;
       const item = this.routes.find((n) => n[0] === route);
-      return item ? item[2] : 'DocsView';
+      return item ? item[2] : 'HomeView';
     },
     pageClass() {
       return { wide: this.view === 'CategoriesView', full: this.view === 'OrgView', fit: this.view === 'SettingsView' };
