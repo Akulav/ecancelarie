@@ -216,8 +216,11 @@ const Modal = {
         <div class="modal-head"><h2>{{ title }}</h2><button type="button" class="x" @click="cancel" aria-label="Închide">×</button></div>
         <div class="modal-body"><slot /></div>
         <div class="modal-foot">
-          <button v-if="cancelLabel" type="button" class="btn" :disabled="busy" @click="cancel">{{ cancelLabel }}</button>
-          <button class="btn" :class="danger ? 'danger-solid' : 'primary'" :disabled="busy">{{ busy ? busyLabel : okLabel }}</button>
+          <!-- formularele cu mai mulți pași își pun propriile butoane (Înapoi / Înainte) -->
+          <slot name="foot">
+            <button v-if="cancelLabel" type="button" class="btn" :disabled="busy" @click="cancel">{{ cancelLabel }}</button>
+            <button class="btn" :class="danger ? 'danger-solid' : 'primary'" :disabled="busy">{{ busy ? busyLabel : okLabel }}</button>
+          </slot>
         </div>
       </form>
     </div>`,
@@ -343,11 +346,35 @@ const ICONS = {
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
   review: '<path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9h8M8 12h5"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  shield: '<path d="M12 3 4.5 6v6c0 4.4 3.2 7.8 7.5 9 4.3-1.2 7.5-4.6 7.5-9V6z"/>',
 };
 const Icon = {
   props: { name: String },
   computed: { svg() { return ICONS[this.name] || ''; } },
   template: /*html*/ `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" v-html="svg"></svg>`,
+};
+
+// Starea „gol” a unei liste: o ilustrație mică, un titlu, o explicație și, opțional, o acțiune (slot).
+const EMPTY_ART = {
+  search:
+    '<rect x="18" y="16" width="52" height="64" rx="8" fill="#fff" stroke="#b9cbe2" stroke-width="2"/><path d="M28 32h32M28 41h32M28 50h20" stroke="#d3e2f4" stroke-width="3" stroke-linecap="round"/><circle cx="74" cy="58" r="15" fill="#e8eff8" stroke="#1d4e89" stroke-width="3"/><path d="m85 69 11 11" stroke="#1d4e89" stroke-width="4" stroke-linecap="round"/>',
+  docs:
+    '<rect x="16" y="24" width="48" height="58" rx="8" transform="rotate(-8 40 53)" fill="#e8eff8" stroke="#b9cbe2" stroke-width="2"/><rect x="38" y="16" width="48" height="62" rx="8" fill="#fff" stroke="#1d4e89" stroke-width="2"/><path d="M48 32h28M48 41h28M48 50h18" stroke="#9db9dc" stroke-width="3" stroke-linecap="round"/><circle cx="82" cy="72" r="13" fill="#1d4e89"/><path d="M82 66v12M76 72h12" stroke="#fff" stroke-width="3" stroke-linecap="round"/>',
+  inbox:
+    '<path d="M16 50 28 22h48l12 28v24a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6z" fill="#fff" stroke="#b9cbe2" stroke-width="2"/><path d="M16 50h20l5 9h22l5-9h20" fill="#e8eff8" stroke="#b9cbe2" stroke-width="2" stroke-linejoin="round"/><circle cx="76" cy="26" r="13" fill="#12b76a"/><path d="m70 26 4.5 4.5L83 22" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+};
+const EmptyState = {
+  props: { art: { type: String, default: 'docs' }, title: String, text: String },
+  computed: { svg() { return EMPTY_ART[this.art] || EMPTY_ART.docs; } },
+  template: /*html*/ `
+    <div class="card empty empty-state">
+      <svg class="empty-art" viewBox="0 0 104 96" fill="none" aria-hidden="true" v-html="svg"></svg>
+      <b>{{ title }}</b>
+      <p v-if="text">{{ text }}</p>
+      <div v-if="$slots.default" class="empty-actions"><slot /></div>
+    </div>`,
 };
 
 // ---------- documente ----------
@@ -389,6 +416,15 @@ const addDays = (n) => {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 };
 
+// Formularul de document, pe pași: fiecare pas are câmpurile lui, iar ultimul arată totul înainte de salvare.
+// La un document nou pașii se parcurg în ordine (cu validarea pasului curent); la modificare se poate sări oriunde.
+const DOC_STEPS = [
+  { label: 'Date generale', hint: 'Denumire, dată, număr', icon: 'file' },
+  { label: 'Fișiere', hint: 'Ce se atașează', icon: 'clip' },
+  { label: 'Etichete și acces', hint: 'Unde apare, cine îl vede', icon: 'shield' },
+  { label: 'Semnare și avizare', hint: 'Cine semnează, cine avizează', icon: 'pen' },
+  { label: 'Verificare', hint: 'Totul dintr-o privire', icon: 'list' },
+];
 const DocForm = {
   components: { Modal, Icon },
   props: { doc: Object },
@@ -396,6 +432,10 @@ const DocForm = {
   data() {
     const d = this.doc;
     return {
+      steps: DOC_STEPS,
+      step: 0,
+      // cel mai departe pas atins: până acolo se poate sări direct din bara de pași
+      reached: d ? DOC_STEPS.length - 1 : 0,
       busy: false,
       dragging: false,
       userFilter: '',
@@ -442,10 +482,81 @@ const DocForm = {
         ? 'Persoana aflată la rând primește un e-mail și o notificare în aplicație. Semnatarii văd documentul indiferent de setările de vizibilitate.'
         : 'E-mailul nu este configurat (administratorul îl setează în pagina „Setări”): semnatarii vor fi anunțați doar în aplicație.';
     },
+    last() {
+      return this.steps.length - 1;
+    },
+    fileCount() {
+      return this.keptFiles.length + this.newFiles.length;
+    },
+    // pentru pasul de verificare
+    chosenTags() {
+      const out = [];
+      for (const c of store.categories) for (const t of c.tags) if (this.form.tagIds.includes(t.id)) out.push({ id: t.id, name: t.name, color: c.color });
+      return out;
+    },
+    accessText() {
+      if (this.form.visibility === 'all') return 'Toți angajații';
+      const names = [...this.form.unitIds.map(unitName), ...this.form.userIds.map((id) => this.personName(id))];
+      return names.length ? names.join(', ') : 'Doar autorul, semnatarii și administratorii';
+    },
+    signers() {
+      return this.needsSign ? this.form.signerIds : [];
+    },
+    // un rezumat scurt sub fiecare pas din bară
+    stepNotes() {
+      return [
+        this.form.title ? this.form.title : '',
+        this.fileCount ? this.fileCount + (this.fileCount === 1 ? ' fișier' : ' fișiere') : '',
+        this.form.visibility === 'all' ? 'toți angajații' : 'acces restrâns',
+        this.signers.length ? this.signers.length + (this.signers.length === 1 ? ' semnatar' : ' semnatari') : this.needsReview ? 'avizare' : '',
+        '',
+      ];
+    },
   },
   methods: {
     fmtSize,
     today,
+    fmtDay,
+    extName,
+    kindOf: (name) => EXT_KIND[extName(name)] || 'other',
+    // Câmpurile obligatorii ale pasului curent (doar el este afișat) trebuie completate înainte de a merge mai departe.
+    paneValid() {
+      const pane = this.$refs.pane;
+      if (!pane) return true;
+      for (const el of pane.querySelectorAll('input, textarea, select')) {
+        if (!el.checkValidity()) {
+          el.reportValidity();
+          return false;
+        }
+      }
+      if (this.step === 3 && this.needsReview && !this.form.review_until) {
+        toast('Alegeți termenul de avizare.', true);
+        return false;
+      }
+      return true;
+    },
+    go(i) {
+      if (i === this.step || i < 0 || i > this.last) return;
+      if (i > this.step) {
+        if (!this.paneValid()) return;
+        // la un document nou nu se sare peste pași neatinși (în afară de salt direct la verificare)
+        if (!this.doc && i > this.reached + 1 && i !== this.last) return;
+      }
+      this.step = i;
+      this.reached = Math.max(this.reached, i);
+      this.$nextTick(() => {
+        const el = this.$refs.pane && this.$refs.pane.querySelector('input:not([type=checkbox]):not([type=hidden]):not(:disabled), textarea');
+        if (el && this.step < this.last) el.focus();
+      });
+    },
+    // Enter sau butonul principal: pasul următor, iar la final salvarea
+    submit() {
+      if (this.step < this.last) this.go(this.step + 1);
+      else this.save();
+    },
+    saveNow() {
+      if (this.paneValid()) this.save();
+    },
     match(filter, selected) {
       const q = filter.trim().toLowerCase();
       return store.users.filter((u) => !q || u.full_name.toLowerCase().includes(q) || selected.includes(u.id));
@@ -494,8 +605,9 @@ const DocForm = {
       this.dragging = false;
       this.addFiles(e.dataTransfer.files);
     },
-    async submit() {
+    async save() {
       const fd = new FormData();
+      if (!this.form.title.trim()) return this.go(0);
       if (this.needsReview && !this.form.review_until) return toast('Alegeți termenul de avizare.', true);
       fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
       for (const f of this.newFiles) fd.append('files', f);
@@ -514,123 +626,205 @@ const DocForm = {
   },
   template: /*html*/ `
     <Modal xl :title="doc ? 'Modifică documentul' : 'Document nou'" :busy="busy" @close="$emit('close')" @submit="submit">
-      <div class="dform">
-        <section class="fsec">
-          <div class="fsec-head"><span class="fnum">1</span><div><h3>Date generale</h3><p>Denumirea, data și numărul de înregistrare</p></div></div>
-          <div class="fgrid4">
-            <label class="field span2"><span>Denumirea documentului *</span><input v-model="form.title" maxlength="300" required autofocus /></label>
-            <div class="field datefield">
-              <span><label for="doc-date">Data documentului{{ noDate ? '' : ' *' }}</label><label class="nodate"><input type="checkbox" v-model="noDate" /> fără dată</label></span>
-              <input id="doc-date" v-model="form.doc_date" type="date" :required="!noDate" :disabled="noDate" :title="noDate ? 'Pentru formulare, modele și alte documente fără dată' : ''" />
-            </div>
-            <label class="field"><span>Număr</span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
-            <label class="field span4 mb0"><span>Descriere <span class="opt">(opțional)</span></span><textarea v-model="form.description" rows="2" maxlength="5000" placeholder="Pe scurt, despre ce este documentul"></textarea></label>
-          </div>
-        </section>
+      <div class="wizard">
+        <ol class="wsteps" aria-label="Pașii formularului">
+          <li v-for="(s, i) in steps" :key="i" class="stp" :class="{ cur: i === step, done: i < step || (i <= reached && i !== step && doc), open: i <= reached + 1 || doc || i === last }">
+            <button type="button" :disabled="busy || !(i <= reached + 1 || doc || i === last)" :aria-current="i === step ? 'step' : null" @click="go(i)">
+              <span class="stp-dot"><Icon v-if="i < step" name="check" /><Icon v-else :name="s.icon" /></span>
+              <span class="stp-label">{{ s.label }}</span>
+              <span class="stp-hint">{{ stepNotes[i] || s.hint }}</span>
+            </button>
+          </li>
+        </ol>
+        <div class="stp-bar" aria-hidden="true"><span :style="{ width: (step / last) * 100 + '%' }"></span></div>
 
-        <div class="fgrid2">
-          <section class="fsec">
-            <div class="fsec-head"><span class="fnum">2</span><div><h3>Fișiere</h3><p>.pdf, .docx, .xlsx… cel mult 50 MB fiecare</p></div><span v-if="keptFiles.length + newFiles.length" class="pill">{{ keptFiles.length + newFiles.length }}</span></div>
-            <div class="drop" :class="{ over: dragging }" @dragover.prevent="dragging = true" @dragleave="dragLeave" @drop.prevent="drop" @click="$refs.files.click()">
-              <input ref="files" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
-              <Icon name="upload" />
-              <span>Trageți fișierele aici sau <b class="linklike">alegeți de pe calculator</b></span>
+        <div ref="pane" class="step-pane" :key="step">
+          <!-- 1. date generale -->
+          <template v-if="step === 0">
+            <div class="pane-head"><span class="pane-ico"><Icon name="file" /></span><div><h3>Despre document</h3><p>Denumirea este obligatorie; data poate lipsi la formulare și modele.</p></div></div>
+            <div class="fgrid4">
+              <label class="field span4"><span>Denumirea documentului *</span><input v-model="form.title" class="big-input" maxlength="300" required autofocus placeholder="ex. Ordin privind concediile anuale" /></label>
+              <div class="field datefield span2">
+                <span><label for="doc-date">Data documentului{{ noDate ? '' : ' *' }}</label><label class="nodate"><input type="checkbox" v-model="noDate" /> fără dată</label></span>
+                <input id="doc-date" v-model="form.doc_date" type="date" :required="!noDate" :disabled="noDate" :title="noDate ? 'Pentru formulare, modele și alte documente fără dată' : ''" />
+              </div>
+              <label class="field span2"><span>Număr de înregistrare <span class="opt">(opțional)</span></span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
+              <label class="field span4 mb0"><span>Descriere <span class="opt">(opțional)</span></span><textarea v-model="form.description" rows="4" maxlength="5000" placeholder="Pe scurt, despre ce este documentul — ajută la căutare"></textarea></label>
             </div>
-            <ul v-if="keptFiles.length || newFiles.length" class="filelist">
+          </template>
+
+          <!-- 2. fișiere -->
+          <template v-else-if="step === 1">
+            <div class="pane-head"><span class="pane-ico"><Icon name="clip" /></span><div><h3>Fișierele documentului</h3><p>PDF, Word, Excel, imagini… cel mult 10 fișiere noi, câte 50 MB.</p></div><span v-if="fileCount" class="pill">{{ fileCount }}</span></div>
+            <div class="drop big" :class="{ over: dragging }" role="button" tabindex="0" @keydown.enter.prevent="$refs.files.click()" @keydown.space.prevent="$refs.files.click()"
+              @dragover.prevent="dragging = true" @dragleave="dragLeave" @drop.prevent="drop" @click="$refs.files.click()">
+              <input ref="files" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
+              <span class="drop-art" aria-hidden="true">
+                <svg viewBox="0 0 120 90" fill="none">
+                  <rect x="22" y="14" width="46" height="60" rx="7" transform="rotate(-9 45 44)" fill="#e8eff8" stroke="#b9cbe2" stroke-width="2"/>
+                  <rect x="44" y="10" width="46" height="60" rx="7" fill="#fff" stroke="#1d4e89" stroke-width="2"/>
+                  <path d="M54 26h26M54 34h26M54 42h16" stroke="#9db9dc" stroke-width="3" stroke-linecap="round"/>
+                  <circle cx="88" cy="64" r="17" fill="#1d4e89"/>
+                  <path d="M88 72V57M81 63l7-7 7 7" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <b>{{ dragging ? 'Eliberați pentru a atașa' : 'Trageți fișierele aici' }}</b>
+              <span class="muted small">sau <span class="linklike">alegeți de pe calculator</span></span>
+            </div>
+            <ul v-if="fileCount" class="filelist cards">
               <li v-for="f in keptFiles" :key="'k' + f.id">
+                <span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>
                 <span class="fname">{{ f.name }}</span><span class="muted small">{{ fmtSize(f.size) }}</span>
                 <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="form.removeFileIds.push(f.id)"><Icon name="trash" /></button>
               </li>
               <li v-for="(f, i) in newFiles" :key="'n' + i">
+                <span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>
                 <span class="fname">{{ f.name }}</span><span class="badge new">nou</span><span class="muted small">{{ fmtSize(f.size) }}</span>
                 <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="newFiles.splice(i, 1)"><Icon name="trash" /></button>
               </li>
             </ul>
-          </section>
+            <p v-else class="muted small hint center">Puteți continua și fără fișiere (ex. un document doar cu descriere) și le adăuga mai târziu.</p>
+          </template>
 
-          <section class="fsec">
-            <div class="fsec-head"><span class="fnum">3</span><div><h3>Etichete</h3><p>Ajută la găsirea documentului în listă</p></div><span v-if="form.tagIds.length" class="pill">{{ form.tagIds.length }}</span></div>
-            <div v-if="!store.categories.length" class="muted small">Administratorul nu a definit încă nicio categorie.</div>
-            <div v-for="c in store.categories" :key="c.id" class="pick-group">
-              <div><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</div>
-              <div class="pick">
-                <button v-for="t in c.tags" :key="t.id" type="button" :class="{ on: form.tagIds.includes(t.id) }" :style="tagStyle(c, t)" @click="toggle(form.tagIds, t.id)">{{ t.name }}</button>
-                <span v-if="!c.tags.length" class="muted small">fără etichete</span>
+          <!-- 3. etichete și acces -->
+          <div v-else-if="step === 2" class="fgrid2">
+            <section class="fsec">
+              <div class="fsec-head"><span class="fnum"><Icon name="tag" /></span><div><h3>Etichete</h3><p>Ajută la găsirea documentului în listă</p></div><span v-if="form.tagIds.length" class="pill">{{ form.tagIds.length }}</span></div>
+              <div v-if="!store.categories.length" class="muted small">Administratorul nu a definit încă nicio categorie.</div>
+              <div v-for="c in store.categories" :key="c.id" class="pick-group">
+                <div><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</div>
+                <div class="pick">
+                  <button v-for="t in c.tags" :key="t.id" type="button" :class="{ on: form.tagIds.includes(t.id) }" :style="tagStyle(c, t)" @click="toggle(form.tagIds, t.id)">{{ t.name }}</button>
+                  <span v-if="!c.tags.length" class="muted small">fără etichete</span>
+                </div>
               </div>
-            </div>
-          </section>
-
-          <section class="fsec">
-            <div class="fsec-head"><span class="fnum">4</span><div><h3>Acces</h3><p>Cine poate vedea documentul</p></div></div>
-            <div class="seg full" role="radiogroup" aria-label="Cine poate vedea documentul">
-              <button type="button" role="radio" :aria-checked="form.visibility === 'all' ? 'true' : 'false'" :class="{ on: form.visibility === 'all' }" @click="form.visibility = 'all'"><Icon name="globe" />Toți angajații</button>
-              <button type="button" role="radio" :aria-checked="form.visibility === 'restricted' ? 'true' : 'false'" :class="{ on: form.visibility === 'restricted' }" @click="form.visibility = 'restricted'"><Icon name="lock" />Doar cei selectați</button>
-            </div>
-            <template v-if="form.visibility === 'restricted'">
-              <div class="vis-cols mt10">
-                <div class="pickbox">
-                  <div class="pickbox-head"><b class="small">Subdiviziuni</b><span class="muted small">{{ form.unitIds.length }}</span></div>
-                  <div class="scroll">
-                    <label v-for="u in units" :key="u.id" class="check" :style="{ paddingLeft: u.depth * 14 + 'px' }">
-                      <input type="checkbox" :checked="form.unitIds.includes(u.id)" @change="toggle(form.unitIds, u.id)" /> {{ u.name }}
-                    </label>
+            </section>
+            <section class="fsec">
+              <div class="fsec-head"><span class="fnum"><Icon name="shield" /></span><div><h3>Acces</h3><p>Cine poate vedea documentul</p></div></div>
+              <div class="choice-cards" role="radiogroup" aria-label="Cine poate vedea documentul">
+                <button type="button" role="radio" :aria-checked="form.visibility === 'all' ? 'true' : 'false'" :class="{ on: form.visibility === 'all' }" @click="form.visibility = 'all'">
+                  <Icon name="globe" /><b>Toți angajații</b><span>apare în lista tuturor</span>
+                </button>
+                <button type="button" role="radio" :aria-checked="form.visibility === 'restricted' ? 'true' : 'false'" :class="{ on: form.visibility === 'restricted' }" @click="form.visibility = 'restricted'">
+                  <Icon name="lock" /><b>Doar cei selectați</b><span>subdiviziuni și persoane</span>
+                </button>
+              </div>
+              <template v-if="form.visibility === 'restricted'">
+                <div class="vis-cols mt10">
+                  <div class="pickbox">
+                    <div class="pickbox-head"><b class="small">Subdiviziuni</b><span class="muted small">{{ form.unitIds.length }}</span></div>
+                    <div class="scroll">
+                      <label v-for="u in units" :key="u.id" class="check" :style="{ paddingLeft: u.depth * 14 + 'px' }">
+                        <input type="checkbox" :checked="form.unitIds.includes(u.id)" @change="toggle(form.unitIds, u.id)" /> {{ u.name }}
+                      </label>
+                    </div>
+                  </div>
+                  <div class="pickbox">
+                    <div class="pickbox-head"><b class="small">Persoane</b><span class="muted small">{{ form.userIds.length }}</span></div>
+                    <input v-model="userFilter" placeholder="Caută după nume…" @keydown.enter.prevent />
+                    <div class="scroll">
+                      <label v-for="u in people" :key="u.id" class="check">
+                        <input type="checkbox" :checked="form.userIds.includes(u.id)" @change="toggle(form.userIds, u.id)" /> {{ u.full_name }}
+                      </label>
+                    </div>
                   </div>
                 </div>
-                <div class="pickbox">
-                  <div class="pickbox-head"><b class="small">Persoane</b><span class="muted small">{{ form.userIds.length }}</span></div>
-                  <input v-model="userFilter" placeholder="Caută după nume…" />
-                  <div class="scroll">
-                    <label v-for="u in people" :key="u.id" class="check">
-                      <input type="checkbox" :checked="form.userIds.includes(u.id)" @change="toggle(form.userIds, u.id)" /> {{ u.full_name }}
-                    </label>
+                <p class="muted small hint">O subdiviziune include automat și cele din subordinea ei. Autorul și administratorii văd documentul întotdeauna.</p>
+              </template>
+            </section>
+          </div>
+
+          <!-- 4. semnare și avizare -->
+          <div v-else-if="step === 3" class="fgrid2">
+            <section class="fsec" :class="{ active: needsSign }">
+              <div class="fsec-head"><span class="fnum"><Icon name="pen" /></span><div><h3>Semnare</h3><p>Semnătură digitală, pe rând</p></div>
+                <label class="switch" title="Documentul trebuie semnat digital"><input type="checkbox" v-model="needsSign" aria-label="Documentul trebuie semnat digital" /><span></span></label>
+              </div>
+              <template v-if="needsSign">
+                <ol v-if="form.signerIds.length" class="signorder chain">
+                  <li v-for="(id, i) in form.signerIds" :key="id" :class="{ signed: hasSigned(id) }">
+                    <span class="step">{{ i + 1 }}</span>
+                    <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }}; semnează la final)</span></span>
+                    <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
+                    <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
+                    <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
+                  </li>
+                </ol>
+                <p v-else class="muted small">Adăugați semnatarii în ordinea în care trebuie să semneze.</p>
+                <div class="pickbox mt10">
+                  <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" @keydown.enter.prevent />
+                  <div class="scroll short">
+                    <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
+                      <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span><span v-if="away(u.id)" class="warn small">(absent: {{ away(u.id) }})</span></span>
+                    </button>
                   </div>
                 </div>
+                <p class="muted small hint">Fiecare semnatar semnează versiunea curentă, apoi vine rândul următorului. Cine este absent semnează la final. {{ mailHint }}</p>
+              </template>
+              <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
+            </section>
+            <section class="fsec" :class="{ active: needsReview }">
+              <div class="fsec-head"><span class="fnum"><Icon name="review" /></span><div><h3>Avizare</h3><p>Observații și propuneri în editor, până la termen</p></div>
+                <label class="switch" title="Documentul este trimis spre avizare"><input type="checkbox" v-model="needsReview" aria-label="Documentul este trimis spre avizare" /><span></span></label>
               </div>
-              <p class="muted small hint">O subdiviziune include automat și cele din subordinea ei. Autorul și administratorii văd documentul întotdeauna.</p>
-            </template>
-            <p v-else class="muted small hint">Documentul apare în lista tuturor angajaților.</p>
-          </section>
+              <template v-if="needsReview">
+                <label class="field mb0"><span>Termen de avizare (inclusiv)</span><input v-model="form.review_until" type="date" :min="doc ? undefined : today()" required /></label>
+                <p class="muted small hint">{{ reviewHint }}</p>
+              </template>
+              <p v-else class="muted small hint">Activați pentru a cere observații: fiecare deschide fișierul în editor, pe rând. La documentele Word modificările apar ca propuneri, pe care le acceptați sau le respingeți.</p>
+            </section>
+          </div>
 
-          <section class="fsec">
-            <div class="fsec-head"><span class="fnum">5</span><div><h3>Semnare</h3><p>Semnătură digitală, pe rând</p></div>
-              <label class="switch" title="Documentul trebuie semnat digital"><input type="checkbox" v-model="needsSign" aria-label="Documentul trebuie semnat digital" /><span></span></label>
-            </div>
-            <template v-if="needsSign">
-              <ol v-if="form.signerIds.length" class="signorder">
-                <li v-for="(id, i) in form.signerIds" :key="id">
-                  <span class="step">{{ i + 1 }}</span>
-                  <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }}; semnează la final)</span></span>
-                  <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
-                  <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
-                  <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
-                </li>
-              </ol>
-              <p v-else class="muted small">Adăugați semnatarii în ordinea în care trebuie să semneze.</p>
-              <div class="pickbox mt10">
-                <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" />
-                <div class="scroll short">
-                  <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
-                    <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span><span v-if="away(u.id)" class="warn small">(absent: {{ away(u.id) }})</span></span>
-                  </button>
-                </div>
+          <!-- 5. verificare -->
+          <template v-else>
+            <div class="pane-head"><span class="pane-ico ok"><Icon name="check" /></span><div><h3>{{ doc ? 'Verificați modificările' : 'Totul este pregătit' }}</h3><p>Verificați datele; „Modifică” vă duce înapoi la pasul respectiv.</p></div></div>
+            <div class="review-grid">
+              <div class="rv">
+                <div class="rv-head"><Icon name="file" /><b>Document</b><button type="button" class="btn link sm" @click="go(0)">Modifică</button></div>
+                <div class="rv-title">{{ form.title || '—' }}</div>
+                <div class="muted small">{{ noDate ? 'fără dată' : fmtDay(form.doc_date) }}<template v-if="form.number"> · nr. {{ form.number }}</template></div>
+                <p v-if="form.description" class="rv-desc">{{ form.description }}</p>
               </div>
-              <p class="muted small hint">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. Cine este absent (concediu, deplasare) semnează la final, după ceilalți. {{ mailHint }}</p>
-            </template>
-            <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
-          </section>
+              <div class="rv">
+                <div class="rv-head"><Icon name="clip" /><b>Fișiere</b><button type="button" class="btn link sm" @click="go(1)">Modifică</button></div>
+                <ul v-if="fileCount" class="rv-files">
+                  <li v-for="f in keptFiles" :key="'k' + f.id"><span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>{{ f.name }}</li>
+                  <li v-for="(f, i) in newFiles" :key="'n' + i"><span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>{{ f.name }} <span class="badge new">nou</span></li>
+                </ul>
+                <p v-else class="warn small">Niciun fișier atașat.</p>
+              </div>
+              <div class="rv">
+                <div class="rv-head"><Icon name="shield" /><b>Etichete și acces</b><button type="button" class="btn link sm" @click="go(2)">Modifică</button></div>
+                <div class="pick rv-tags">
+                  <span v-for="t in chosenTags" :key="t.id" class="tagchip" :style="{ background: t.color }">{{ t.name }}</span>
+                  <span v-if="!chosenTags.length" class="muted small">fără etichete</span>
+                </div>
+                <div class="rv-line"><Icon :name="form.visibility === 'all' ? 'globe' : 'lock'" />{{ accessText }}</div>
+              </div>
+              <div class="rv">
+                <div class="rv-head"><Icon name="pen" /><b>Semnare și avizare</b><button type="button" class="btn link sm" @click="go(3)">Modifică</button></div>
+                <ol v-if="signers.length" class="rv-chain">
+                  <li v-for="(id, i) in signers" :key="id"><span class="step">{{ i + 1 }}</span>{{ personName(id) }}</li>
+                </ol>
+                <p v-else class="muted small">Fără semnare.</p>
+                <div class="rv-line"><Icon name="review" />{{ needsReview ? 'Avizare până la ' + fmtDay(form.review_until) + ' inclusiv' : 'Fără avizare' }}</div>
+              </div>
+            </div>
+            <p v-if="signers.length" class="muted small hint center">{{ doc ? 'Dacă se schimbă persoana aflată la rând, ea este anunțată la salvare.' : 'La salvare, ' + personName(signers[0]) + ' este anunțat(ă) că trebuie să semneze.' }}</p>
+          </template>
         </div>
-
-        <section class="fsec">
-          <div class="fsec-head"><span class="fnum">6</span><div><h3>Avizare</h3><p>Cei care văd documentul îl pot modifica și comenta direct în pagină, până la termen</p></div>
-            <label class="switch" title="Documentul este trimis spre avizare"><input type="checkbox" v-model="needsReview" aria-label="Documentul este trimis spre avizare" /><span></span></label>
-          </div>
-          <div v-if="needsReview" class="review-row">
-            <label class="field mb0"><span>Termen de avizare (inclusiv)</span><input v-model="form.review_until" type="date" :min="doc ? undefined : today()" required /></label>
-            <p class="muted small hint">{{ reviewHint }}</p>
-          </div>
-          <p v-else class="muted small hint">Activați pentru a cere observații: fiecare deschide fișierul în editor, pe rând (cât timp unul lucrează, ceilalți îl văd doar pentru citire). La documentele Word modificările apar ca propuneri, pe care le acceptați sau le respingeți.</p>
-        </section>
       </div>
+      <template #foot>
+        <span class="foot-step muted small">Pasul {{ step + 1 }} din {{ steps.length }}</span>
+        <button v-if="step === 0" type="button" class="btn" :disabled="busy" @click="$emit('close')">Anulează</button>
+        <button v-else type="button" class="btn" :disabled="busy" @click="go(step - 1)"><Icon name="left" />Înapoi</button>
+        <button v-if="doc && step < last" type="button" class="btn" :disabled="busy" @click="saveNow">Salvează acum</button>
+        <button v-else-if="!doc && step > 0 && step < last - 1" type="button" class="btn ghost" :disabled="busy" @click="go(last)">Sari la verificare</button>
+        <button class="btn primary" :disabled="busy">
+          <template v-if="step < last">Înainte<Icon name="right" /></template>
+          <template v-else>{{ busy ? 'Se salvează…' : doc ? 'Salvează modificările' : 'Adaugă documentul' }}</template>
+        </button>
+      </template>
     </Modal>`,
 };
 
@@ -1309,7 +1503,7 @@ function writeOpenCats(ids) {
 }
 
 const DocsView = {
-  components: { DocForm, DocCard, Icon },
+  components: { DocForm, DocCard, Icon, EmptyState },
   data: () => ({ sel: { type: 'all', id: null }, year: '', q: '', editing: undefined, openCats: readOpenCats() }),
   computed: {
     store: () => store,
@@ -1407,9 +1601,14 @@ const DocsView = {
           </select>
         </div>
 
-        <div v-if="store.docsLoaded && !groups.length" class="card empty">
-          {{ docs.length ? 'Niciun document nu corespunde filtrelor.' : 'Încă nu există documente disponibile pentru dvs.' }}
-        </div>
+        <template v-if="store.docsLoaded && !groups.length">
+          <EmptyState v-if="docs.length" art="search" title="Niciun document găsit" text="Niciun document nu corespunde căutării sau filtrelor alese.">
+            <button class="btn" @click="(q = ''), (year = ''), (sel = { type: 'all', id: null })">Șterge filtrele</button>
+          </EmptyState>
+          <EmptyState v-else art="docs" title="Încă nu există documente" :text="canAdd ? 'Adăugați primul document; formularul vă ghidează pas cu pas.' : 'Documentele la care aveți acces vor apărea aici.'">
+            <button v-if="canAdd" class="btn primary" @click="editing = null">+ Document nou</button>
+          </EmptyState>
+        </template>
         <div v-if="groups.length" class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
         <template v-for="g in groups" :key="g.key">
           <div class="month">{{ g.label }}</div>
@@ -1423,7 +1622,7 @@ const DocsView = {
 // ---------- notificări ----------
 // Aceeași așezare ca pagina Documente: filtre în stânga, lista cu aceleași coloane în dreapta.
 const InboxView = {
-  components: { DocForm, DocCard },
+  components: { DocForm, DocCard, EmptyState },
   data: () => ({ editing: undefined, show: 'all' }),
   computed: {
     toSign: () => store.docs.filter((d) => d.mySign === 'pending'),
@@ -1462,7 +1661,7 @@ const InboxView = {
         <button class="side-item" :class="{ on: show === 'new' }" @click="show = 'new'"><span>Documente nevăzute</span><span class="count">{{ fresh.length }}</span></button>
       </aside>
       <section>
-        <div v-if="!groups.length" class="card empty">{{ total ? 'Nicio notificare în această categorie.' : 'Nu aveți notificări. Sunteți la zi cu toate documentele.' }}</div>
+        <EmptyState v-if="!groups.length" art="inbox" :title="total ? 'Nimic aici' : 'Sunteți la zi'" :text="total ? 'Nicio notificare în această categorie.' : 'Nu aveți documente de semnat sau nevăzute.'" />
         <div v-else class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
         <template v-for="g in groups" :key="g.key">
           <div class="month">{{ g.label }} ({{ g.docs.length }})</div>
@@ -2903,13 +3102,56 @@ const AiTokens = {
     </Modal>`,
 };
 
+// ---------- filigran ----------
+// Numele, utilizatorul și momentul, repetate discret pe tot ecranul (inclusiv peste ferestre și editor):
+// o captură de ecran sau o fotografie a monitorului arată cine a văzut documentul și când.
+// Stratul nu primește clicuri și nu este citit de cititoarele de ecran.
+const Watermark = {
+  data: () => ({ now: new Date() }),
+  mounted() {
+    this.timer = setInterval(() => (this.now = new Date()), 60000);
+  },
+  unmounted() {
+    clearInterval(this.timer);
+  },
+  computed: {
+    style() {
+      const me = store.me;
+      const n = this.now;
+      const when = String(n.getDate()).padStart(2, '0') + '.' + String(n.getMonth() + 1).padStart(2, '0') + '.' + n.getFullYear() + ' ' + String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0');
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+      const label = esc(`${me.full_name} · ${me.username} · ${when}`);
+      // două rânduri decalate pe fiecare „țiglă”, ca textul să nu formeze coloane
+      const text = (x, y) => `<text x="${x}" y="${y}" text-anchor="middle" transform="rotate(-24 ${x} ${y})">${label}</text>`;
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="300">` +
+        `<g fill="#1b2430" fill-opacity="0.06" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600">${text(140, 80)}${text(420, 230)}</g></svg>`;
+      return { backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")` };
+    },
+  },
+  template: /*html*/ `<div class="watermark" aria-hidden="true" :style="style"></div>`,
+};
+
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens },
-  data: () => ({ pass: null, passBusy: false, bump: false, ai: false }),
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens, Watermark, Icon },
+  data: () => ({ pass: null, passBusy: false, bump: false, ai: false, menu: false }),
+  // meniul contului se închide la un clic în afara lui sau cu Escape
+  mounted() {
+    this.closeMenu = (e) => {
+      if (this.menu && (e.type !== 'keydown' || e.key === 'Escape') && !(e.target.closest && e.target.closest('.usermenu'))) this.menu = false;
+    };
+    document.addEventListener('mousedown', this.closeMenu);
+    document.addEventListener('keydown', this.closeMenu);
+  },
+  unmounted() {
+    document.removeEventListener('mousedown', this.closeMenu);
+    document.removeEventListener('keydown', this.closeMenu);
+  },
   computed: {
     store: () => store,
     inbox: inboxCount,
+    roleName: () => ROLES[store.me.role] || '',
     // [adresă, denumire, componentă]; notificările au propriul buton (cutia poștală) în dreapta barei
     routes() {
       const items = [['documente', 'Documente', 'DocsView'], ['angajati', 'Angajați', 'PeopleView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
@@ -2937,6 +3179,14 @@ const App = {
     },
   },
   methods: {
+    initials,
+    avatarStyle,
+    pick(action) {
+      this.menu = false;
+      if (action === 'ai') this.ai = true;
+      else if (action === 'pass') this.pass = { current: '', next: '', again: '' };
+      else this.logout();
+    },
     async logout() {
       // chiar dacă serverul nu răspunde, pagina nu mai afișează datele contului
       await api('/api/logout', { method: 'POST' }).catch(() => {});
@@ -2984,10 +3234,19 @@ const App = {
                 </svg>
                 <span v-if="inbox" class="mailbox-count">{{ inbox > 99 ? '99+' : inbox }}</span>
               </a>
-              <span class="name">{{ store.me.full_name }}</span>
-              <button class="btn sm" title="Acces pentru asistenți AI (MCP)" @click="ai = true">Asistent AI</button>
-              <button class="btn sm" @click="pass = { current: '', next: '', again: '' }">Parolă</button>
-              <button class="btn sm" @click="logout">Ieșire</button>
+              <div class="usermenu" :class="{ open: menu }">
+                <button type="button" class="um-btn" :aria-expanded="menu ? 'true' : 'false'" aria-haspopup="menu" @click="menu = !menu">
+                  <span class="avatar" :style="avatarStyle(store.me.full_name)">{{ initials(store.me.full_name) }}</span>
+                  <span class="um-who"><b>{{ store.me.full_name }}</b><span>{{ roleName }}</span></span>
+                  <Icon name="chevron" />
+                </button>
+                <div v-if="menu" class="um-pop" role="menu">
+                  <div class="um-head"><b>{{ store.me.full_name }}</b><span>{{ store.me.position || roleName }}</span></div>
+                  <button type="button" role="menuitem" @click="pick('ai')"><Icon name="review" />Asistent AI (MCP)</button>
+                  <button type="button" role="menuitem" @click="pick('pass')"><Icon name="lock" />Schimbă parola</button>
+                  <button type="button" role="menuitem" class="um-out" @click="pick('out')"><Icon name="left" />Ieșire</button>
+                </div>
+              </div>
             </div>
           </div>
         </header>
@@ -2995,6 +3254,7 @@ const App = {
         <AiTokens v-if="ai" @close="ai = false" />
         <Modal v-if="pass" title="Schimbă parola" :busy="passBusy" @close="pass = null" @submit="savePass"><PasswordFields v-model="pass" /></Modal>
         <OfficeEditor v-if="store.editor" :key="store.editor.fileId" :file-id="store.editor.fileId" @close="store.editor = null" />
+        <Watermark />
       </template>
     </template>
     <div v-else class="boot" aria-live="polite"><span class="spinner"></span>Se încarcă…</div>

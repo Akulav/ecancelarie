@@ -10,6 +10,15 @@ Modificările importante din e-Management ANSC. Versiunile urmează [Semantic Ve
   notificărilor. Asistentul lucrează în numele unui angajat, cu drepturile acestuia, printr-un jeton personal
   creat din butonul „Asistent AI”. Accesul este oprit implicit și se pornește din Setări; acțiunile apar în jurnal
   cu mențiunea `[AI: …]`.
+- Formularul de document este acum pe pași (date generale, fișiere, etichete și acces, semnare și avizare,
+  verificare), cu bară de progres, validarea fiecărui pas și un rezumat înainte de salvare. La modificarea unui
+  document se poate sări direct la orice pas și salva oricând.
+- Filigran discret cu numele, utilizatorul, data și ora, repetat pe tot ecranul (și peste ferestre și editor):
+  o captură de ecran arată cine a văzut informația și când.
+
+### Modificat
+- Meniul contului (asistent AI, schimbarea parolei, ieșire) într-un singur buton cu inițialele, în bara de sus.
+- Listele goale (documente, notificări) au ilustrație, explicație și o acțiune („Șterge filtrele”, „Document nou”).
 
 ### Securitate
 - Schimbarea sau resetarea parolei și dezactivarea contului revocă jetoanele AI ale persoanei.
