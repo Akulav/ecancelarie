@@ -381,7 +381,7 @@ function actorOf(userId) {
   const a = db.prepare(AWAY_SQL + ' AND a.user_id = ? ORDER BY a.to_date DESC LIMIT 1').get(today, today, userId);
   return a && a.substitute_id ? a.substitute_id : userId;
 }
-const ABSENCE_KINDS = ['Concediu de odihnă', 'Concediu medical', 'Concediu de studii', 'Concediu fără plată', 'Deplasare', 'Altele'];
+const ABSENCE_KINDS = ['Concediu de odihnă', 'Concediu medical', 'Concediu de studii', 'Concediu fără plată', 'Deplasare', 'Instruire', 'Altele'];
 
 // Documentele la care persoana este acum la rând să semneze.
 function signTurnsOf(userId) {
