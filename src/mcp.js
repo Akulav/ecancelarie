@@ -348,6 +348,10 @@ module.exports = function registerMcp(app, h) {
           review_open: d.reviewOpen,
           sign_until: d.sign_until || null,
           favorite: d.fav || undefined,
+          // pachet: documentele legate (doar cele pe care utilizatorul le vede), fiecare cu semnatarii lui
+          linked_documents: d.bundle_id
+            ? h.listDocuments(req.user).filter((x) => x.bundle_id === d.bundle_id && x.id !== d.id).map((x) => ({ id: x.id, title: x.title, signing: signStatus(x) }))
+            : undefined,
           files: d.files.map((f) => ({
             id: f.id,
             name: f.name,
@@ -499,7 +503,15 @@ module.exports = function registerMcp(app, h) {
       title: 'Adaugă un document',
       description:
         'Creează un document nou (doar editorii și administratorii, cu un jeton care permite modificări). Dacă are semnatari, primul este anunțat prin e-mail. Verificați id-urile cu list_people / list_categories / list_units înainte.',
-      inputSchema: { type: 'object', properties: { ...docFields, files: filesSchema }, required: ['title'] },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...docFields,
+          files: filesSchema,
+          link_with: { type: 'integer', description: 'Opțional: id-ul unui document existent (pe care îl puteți modifica). Noul document intră în pachetul lui, ca documente legate cu semnatari diferiți (ex. o anexă semnată de alte persoane).' },
+        },
+        required: ['title'],
+      },
       annotations: WRITE,
       run: async (req, a) => {
         needEditor(req);
@@ -516,6 +528,7 @@ module.exports = function registerMcp(app, h) {
             unitIds: a.unit_ids,
             userIds: a.user_ids,
             signerIds: a.signer_ids,
+            link_with: a.link_with,
           },
           null
         );

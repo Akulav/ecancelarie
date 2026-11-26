@@ -354,6 +354,7 @@ const ICONS = {
   swap: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
   shield: '<path d="M12 3 4.5 6v6c0 4.4 3.2 7.8 7.5 9 4.3-1.2 7.5-4.6 7.5-9V6z"/>',
+  link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4L12 5.6"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
 };
 const Icon = {
   props: { name: String },
@@ -455,11 +456,17 @@ const DOC_STEPS = [
 ];
 const DocForm = {
   components: { Modal, Icon },
-  props: { doc: Object },
+  // linkWith: documentul nou intră în pachetul acestui document (datele lui servesc drept punct de plecare)
+  props: { doc: Object, linkWith: Object },
   emits: ['close', 'saved'],
   data() {
     const d = this.doc;
+    const L = !d && this.linkWith;
     return {
+      // pachet: fiecare fișier nou devine un document separat, cu propriii semnatari; documentele rămân legate
+      split: false,
+      chains: [],
+      splitIdx: 0,
       steps: DOC_STEPS,
       step: 0,
       // cel mai departe pas atins: până acolo se poate sări direct din bara de pași
@@ -474,16 +481,16 @@ const DocForm = {
       noDate: d ? !d.doc_date : false,
       form: {
         title: d ? d.title : '',
-        number: d ? d.number : '',
-        doc_date: d && d.doc_date ? d.doc_date : today(),
+        number: d ? d.number : L ? L.number : '',
+        doc_date: d && d.doc_date ? d.doc_date : L && L.doc_date ? L.doc_date : today(),
         description: d ? d.description : '',
-        visibility: d ? d.visibility : 'all',
-        tagIds: d ? [...d.tagIds] : [],
-        unitIds: d ? [...d.unitIds] : [],
-        userIds: d ? [...d.userIds] : [],
+        visibility: d ? d.visibility : L ? L.visibility : 'all',
+        tagIds: d ? [...d.tagIds] : L ? [...L.tagIds] : [],
+        unitIds: d ? [...d.unitIds] : L ? [...L.unitIds] : [],
+        userIds: d ? [...d.userIds] : L ? [...L.userIds] : [],
         signerIds: d ? d.signers.map((s) => s.id) : [],
         review_until: d && d.review_until ? d.review_until : addDays(7),
-        sign_until: d ? d.sign_until || '' : '',
+        sign_until: d ? d.sign_until || '' : L ? L.sign_until || '' : '',
         removeFileIds: [],
       },
     };
@@ -496,7 +503,25 @@ const DocForm = {
     },
     signCandidates() {
       const q = this.signFilter.trim().toLowerCase();
-      return store.users.filter((u) => !this.form.signerIds.includes(u.id) && (!q || u.full_name.toLowerCase().includes(q)));
+      return store.users.filter((u) => !this.activeChain.includes(u.id) && (!q || u.full_name.toLowerCase().includes(q)));
+    },
+    // pachetul se poate alege doar la un document nou, cu cel puțin două fișiere noi
+    canSplit() {
+      return !this.doc && this.newFiles.length > 1;
+    },
+    isSplit() {
+      return this.split && this.canSplit;
+    },
+    // lanțul de semnare editat acum: al documentului sau, în pachet, al fișierului ales
+    activeChain() {
+      return this.isSplit ? this.chains[Math.min(this.splitIdx, this.chains.length - 1)] : this.form.signerIds;
+    },
+    splitTitles() {
+      const base = this.form.title.trim();
+      return this.newFiles.map((f) => {
+        const stem = f.name.replace(/\.[^.]+$/, '');
+        return base ? base + ' — ' + stem : stem;
+      });
     },
     // versiunile semnate fac parte din lanțul de semnare și nu se pot elimina de aici
     keptFiles() {
@@ -529,15 +554,15 @@ const DocForm = {
       return names.length ? names.join(', ') : 'Doar autorul, semnatarii și administratorii';
     },
     signers() {
-      return this.needsSign ? this.form.signerIds : [];
+      return this.needsSign ? (this.isSplit ? this.chains.flat() : this.form.signerIds) : [];
     },
     // un rezumat scurt sub fiecare pas din bară
     stepNotes() {
       return [
         this.form.title ? this.form.title : '',
-        this.fileCount ? this.fileCount + (this.fileCount === 1 ? ' fișier' : ' fișiere') : '',
+        this.fileCount ? this.fileCount + (this.fileCount === 1 ? ' fișier' : ' fișiere') + (this.isSplit ? ' · pachet' : '') : '',
         this.form.visibility === 'all' ? 'toți angajații' : 'acces restrâns',
-        this.signers.length ? this.signers.length + (this.signers.length === 1 ? ' semnatar' : ' semnatari') : this.needsReview ? 'avizare' : '',
+        this.isSplit && this.signers.length ? 'semnatari pe fișiere' : this.signers.length ? this.signers.length + (this.signers.length === 1 ? ' semnatar' : ' semnatari') : this.needsReview ? 'avizare' : '',
         '',
       ];
     },
@@ -557,6 +582,12 @@ const DocForm = {
           el.reportValidity();
           return false;
         }
+      }
+      if (this.step === 3 && this.isSplit && this.needsSign && this.chains.some((c) => !c.length)) {
+        const i = this.chains.findIndex((c) => !c.length);
+        this.splitIdx = i;
+        toast('Alegeți semnatarii pentru „' + this.newFiles[i].name + '”.', true);
+        return false;
       }
       if (this.step === 3 && this.needsReview && !this.form.review_until) {
         toast('Alegeți termenul de avizare.', true);
@@ -617,7 +648,7 @@ const DocForm = {
       if (!e.currentTarget.contains(e.relatedTarget)) this.dragging = false;
     },
     move(i, step) {
-      const list = this.form.signerIds;
+      const list = this.activeChain;
       list.splice(i + step, 0, list.splice(i, 1)[0]);
     },
     tagStyle(c, t) {
@@ -629,18 +660,27 @@ const DocForm = {
         if (this.newFiles.some((x) => x.name === f.name && x.size === f.size)) continue;
         if (this.newFiles.length >= 10) return toast('Cel mult 10 fișiere noi la o salvare.', true);
         if (f.size > 50 * 1024 * 1024) toast('„' + f.name + '” depășește 50 MB.', true);
-        else this.newFiles.push(f);
+        else {
+          this.newFiles.push(f);
+          this.chains.push([]);
+        }
       }
     },
     drop(e) {
       this.dragging = false;
       this.addFiles(e.dataTransfer.files);
     },
+    removeNew(i) {
+      this.newFiles.splice(i, 1);
+      this.chains.splice(i, 1);
+      if (this.splitIdx >= this.newFiles.length) this.splitIdx = Math.max(0, this.newFiles.length - 1);
+    },
     async save() {
       const fd = new FormData();
       if (!this.form.title.trim()) return this.go(0);
       if (this.needsReview && !this.form.review_until) return toast('Alegeți termenul de avizare.', true);
-      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], sign_until: this.needsSign ? this.form.sign_until : '', review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
+      if (this.isSplit) return this.saveSplit();
+      fd.append('data', JSON.stringify({ ...this.form, link_with: !this.doc && this.linkWith ? this.linkWith.id : null, signerIds: this.needsSign ? this.form.signerIds : [], sign_until: this.needsSign ? this.form.sign_until : '', review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
       for (const f of this.newFiles) fd.append('files', f);
       this.busy = true;
       try {
@@ -654,9 +694,51 @@ const DocForm = {
       }
       this.busy = false;
     },
+    // Pachetul: câte un document pentru fiecare fișier, pe rând; primul pornește pachetul, celelalte se leagă de el.
+    async saveSplit() {
+      if (this.needsSign && this.chains.some((c) => !c.length)) {
+        this.go(3);
+        return toast('Fiecare fișier are nevoie de cel puțin un semnatar (sau dezactivați semnarea).', true);
+      }
+      this.busy = true;
+      let first = this.linkWith ? this.linkWith.id : null;
+      let done = 0;
+      const notes = [];
+      try {
+        for (let i = 0; i < this.newFiles.length; i++) {
+          const fd = new FormData();
+          fd.append('data', JSON.stringify({
+            ...this.form,
+            title: this.splitTitles[i],
+            link_with: first,
+            signerIds: this.needsSign ? this.chains[i] : [],
+            sign_until: this.needsSign ? this.form.sign_until : '',
+            review_until: this.needsReview ? this.form.review_until : '',
+            doc_date: this.noDate ? '' : this.form.doc_date,
+          }));
+          fd.append('files', this.newFiles[i]);
+          const r = await api('/api/documents', { method: 'POST', form: fd });
+          if (!first) first = r.id;
+          done++;
+          const n = mailNote(r.mail);
+          if (n && !notes.includes(n)) notes.push(n);
+        }
+        toast(notes[0] || 'Au fost adăugate ' + done + ' documente legate.', !!notes.length);
+        await loadDocs();
+        this.$emit('saved');
+      } catch (e) {
+        // documentele deja salvate rămân (și legate); restul se poate adăuga cu „Adaugă document legat”
+        if (done) {
+          toast(done + ' din ' + this.newFiles.length + ' documente au fost adăugate; „' + this.newFiles[done].name + '”: ' + e.message, true);
+          await loadDocs().catch(() => {});
+          this.$emit('saved');
+        } else toast(e.message, true);
+      }
+      this.busy = false;
+    },
   },
   template: /*html*/ `
-    <Modal xl :title="doc ? 'Modifică documentul' : 'Document nou'" :busy="busy" @close="$emit('close')" @submit="submit">
+    <Modal xl :title="doc ? 'Modifică documentul' : linkWith ? 'Document legat nou' : 'Document nou'" :busy="busy" @close="$emit('close')" @submit="submit">
       <div class="wizard">
         <ol class="wsteps" aria-label="Pașii formularului">
           <li v-for="(s, i) in steps" :key="i" class="stp" :class="{ cur: i === step, done: i < step || (i <= reached && i !== step && doc), open: i <= reached + 1 || doc || i === last }">
@@ -669,6 +751,7 @@ const DocForm = {
         </ol>
         <div class="stp-bar" aria-hidden="true"><span :style="{ width: (step / last) * 100 + '%' }"></span></div>
 
+        <p v-if="linkWith && !doc" class="link-note"><Icon name="link" />Se leagă de „{{ linkWith.title }}”: apar împreună, dar fiecare are semnatarii lui.</p>
         <div ref="pane" class="step-pane" :key="step">
           <!-- 1. date generale -->
           <template v-if="step === 0">
@@ -714,9 +797,14 @@ const DocForm = {
               <li v-for="(f, i) in newFiles" :key="'n' + i">
                 <span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>
                 <span class="fname">{{ f.name }}</span><span class="badge new">nou</span><span class="muted small">{{ fmtSize(f.size) }}</span>
-                <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="newFiles.splice(i, 1)"><Icon name="trash" /></button>
+                <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="removeNew(i)"><Icon name="trash" /></button>
               </li>
             </ul>
+            <label v-if="canSplit" class="split-opt" :class="{ on: split }">
+              <input type="checkbox" v-model="split" />
+              <span class="split-ico"><Icon name="link" /></span>
+              <span><b>Semnatari diferiți pe fișiere</b><span class="muted small">Fiecare fișier devine un document separat, cu semnatarii lui, iar documentele rămân legate într-un pachet. Se semnează în paralel.</span></span>
+            </label>
             <p v-else class="muted small hint center">Puteți continua și fără fișiere (ex. un document doar cu descriere) și le adăuga mai târziu.</p>
           </template>
 
@@ -775,20 +863,25 @@ const DocForm = {
                 <label class="switch" title="Documentul trebuie semnat digital"><input type="checkbox" v-model="needsSign" aria-label="Documentul trebuie semnat digital" /><span></span></label>
               </div>
               <template v-if="needsSign">
-                <ol v-if="form.signerIds.length" class="signorder chain">
-                  <li v-for="(id, i) in form.signerIds" :key="id" :class="{ signed: hasSigned(id) }">
+                <div v-if="isSplit" class="split-tabs" role="tablist" aria-label="Fișierul pentru care alegeți semnatarii">
+                  <button v-for="(f, i) in newFiles" :key="i" type="button" role="tab" :aria-selected="i === splitIdx ? 'true' : 'false'" :class="{ on: i === splitIdx, empty: !chains[i].length }" @click="splitIdx = i">
+                    <span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span><span class="fname">{{ f.name }}</span><span class="pill">{{ chains[i].length }}</span>
+                  </button>
+                </div>
+                <ol v-if="activeChain.length" class="signorder chain">
+                  <li v-for="(id, i) in activeChain" :key="id" :class="{ signed: hasSigned(id) }">
                     <span class="step">{{ i + 1 }}</span>
                     <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }})</span></span>
                     <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
-                    <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
-                    <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
+                    <button type="button" class="icon-btn" :disabled="i === activeChain.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
+                    <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="activeChain.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
                   </li>
                 </ol>
-                <p v-else class="muted small">Adăugați semnatarii în ordinea în care trebuie să semneze.</p>
+                <p v-else class="muted small">{{ isSplit ? 'Adăugați semnatarii pentru „' + newFiles[splitIdx].name + '”, în ordinea în care trebuie să semneze.' : 'Adăugați semnatarii în ordinea în care trebuie să semneze.' }}</p>
                 <div class="pickbox mt10">
                   <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" @keydown.enter.prevent />
                   <div class="scroll short">
-                    <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
+                    <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="activeChain.push(u.id)">
                       <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span><span v-if="away(u.id)" class="warn small">(absent: {{ away(u.id) }})</span></span>
                     </button>
                   </div>
@@ -796,6 +889,7 @@ const DocForm = {
                 <label class="field mt10 mb0 due-field"><span>Termen de semnare <span class="opt">(opțional)</span></span>
                   <span class="input-btn"><input v-model="form.sign_until" type="date" :min="doc ? undefined : today()" /><button v-if="form.sign_until" type="button" class="btn link sm" @click="form.sign_until = ''">Fără termen</button></span>
                 </label>
+                <p v-if="isSplit" class="muted small hint">Fiecare fișier are lanțul lui: semnăturile pe fișiere diferite se fac în paralel.</p>
                 <p class="muted small hint">Fiecare semnatar semnează versiunea curentă, apoi vine rândul următorului. Cine este absent semnează la final, iar dacă are înlocuitor, semnează înlocuitorul. <template v-if="form.sign_until">Cu o zi înainte de termen și apoi zilnic, persoana aflată la rând primește o reamintire.</template> {{ mailHint }}</p>
               </template>
               <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
@@ -824,6 +918,7 @@ const DocForm = {
               </div>
               <div class="rv">
                 <div class="rv-head"><Icon name="clip" /><b>Fișiere</b><button type="button" class="btn link sm" @click="go(1)">Modifică</button></div>
+                <p v-if="isSplit" class="rv-line"><Icon name="link" />Pachet: {{ newFiles.length }} documente legate</p>
                 <ul v-if="fileCount" class="rv-files">
                   <li v-for="f in keptFiles" :key="'k' + f.id"><span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>{{ f.name }}</li>
                   <li v-for="(f, i) in newFiles" :key="'n' + i"><span class="ext" :class="kindOf(f.name)">{{ extName(f.name) || 'fișier' }}</span>{{ f.name }} <span class="badge new">nou</span></li>
@@ -840,7 +935,13 @@ const DocForm = {
               </div>
               <div class="rv">
                 <div class="rv-head"><Icon name="pen" /><b>Semnare și avizare</b><button type="button" class="btn link sm" @click="go(3)">Modifică</button></div>
-                <ol v-if="signers.length" class="rv-chain">
+                <template v-if="isSplit && needsSign">
+                  <div v-for="(f, k) in newFiles" :key="k" class="rv-split">
+                    <div class="small"><b>{{ splitTitles[k] }}</b></div>
+                    <ol class="rv-chain"><li v-for="(id, i) in chains[k]" :key="id"><span class="step">{{ i + 1 }}</span>{{ personName(id) }}</li></ol>
+                  </div>
+                </template>
+                <ol v-else-if="signers.length" class="rv-chain">
                   <li v-for="(id, i) in signers" :key="id"><span class="step">{{ i + 1 }}</span>{{ personName(id) }}</li>
                 </ol>
                 <p v-else class="muted small">Fără semnare.</p>
@@ -848,7 +949,8 @@ const DocForm = {
                 <div class="rv-line"><Icon name="review" />{{ needsReview ? 'Avizare până la ' + fmtDay(form.review_until) + ' inclusiv' : 'Fără avizare' }}</div>
               </div>
             </div>
-            <p v-if="signers.length" class="muted small hint center">{{ doc ? 'Dacă se schimbă persoana aflată la rând, ea este anunțată la salvare.' : 'La salvare, ' + personName(signers[0]) + ' este anunțat(ă) că trebuie să semneze.' }}</p>
+            <p v-if="isSplit" class="muted small hint center">La salvare se creează {{ newFiles.length }} documente legate{{ needsSign ? ', iar primul semnatar al fiecăruia este anunțat' : '' }}.</p>
+            <p v-else-if="signers.length" class="muted small hint center">{{ doc ? 'Dacă se schimbă persoana aflată la rând, ea este anunțată la salvare.' : 'La salvare, ' + personName(signers[0]) + ' este anunțat(ă) că trebuie să semneze.' }}</p>
           </template>
         </div>
       </div>
@@ -860,7 +962,7 @@ const DocForm = {
         <button v-else-if="!doc && step > 0 && step < last - 1" type="button" class="btn ghost" :disabled="busy" @click="go(last)">Sari la verificare</button>
         <button class="btn primary" :disabled="busy">
           <template v-if="step < last">Înainte<Icon name="right" /></template>
-          <template v-else>{{ busy ? 'Se salvează…' : doc ? 'Salvează modificările' : 'Adaugă documentul' }}</template>
+          <template v-else>{{ busy ? 'Se salvează…' : doc ? 'Salvează modificările' : isSplit ? 'Adaugă ' + newFiles.length + ' documente' : 'Adaugă documentul' }}</template>
         </button>
       </template>
     </Modal>`,
@@ -1249,12 +1351,14 @@ const FileVersions = {
 };
 
 const DocCard = {
-  components: { FileLink, Modal, SignatureCheck, Icon, FileVersions },
+  name: 'DocCard',
+  components: { FileLink, Modal, SignatureCheck, Icon, FileVersions, DocForm },
   // selectable: modul de selecție multiplă (bifa din stânga); selected: bifat
-  props: { doc: Object, startOpen: Boolean, selectable: Boolean, selected: Boolean },
+  // nested: card afișat în secțiunea „Documente legate” a altui card (fără propria listă de documente legate)
+  props: { doc: Object, startOpen: Boolean, selectable: Boolean, selected: Boolean, nested: Boolean },
   emits: ['edit', 'select'],
   data() {
-    return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null, versionsOf: null };
+    return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null, versionsOf: null, peek: null, addingLinked: false, linking: null };
   },
   computed: {
     store: () => store,
@@ -1329,11 +1433,60 @@ const DocCard = {
     hasSignatures() {
       return this.doc.signers.some((s) => s.signed_at);
     },
+    // celelalte documente din pachet (doar cele pe care utilizatorul le vede)
+    bundle() {
+      const b = this.doc.bundle_id;
+      return b ? store.docs.filter((x) => x.bundle_id === b && x.id !== this.doc.id) : [];
+    },
+    bundleZip() {
+      return '/api/documents/zip?ids=' + [this.doc.id, ...this.bundle.map((x) => x.id)].join(',');
+    },
+    // documentele de care se poate lega: cele pe care le poate modifica, din afara pachetului
+    linkCandidates() {
+      if (!this.linking) return [];
+      const q = this.linking.q.trim().toLowerCase();
+      const b = this.doc.bundle_id;
+      return store.docs
+        .filter((x) => x.canEdit && x.id !== this.doc.id && (!b || x.bundle_id !== b))
+        .filter((x) => !q || x.title.toLowerCase().includes(q) || (x.number || '').toLowerCase().includes(q))
+        .slice(0, 30);
+    },
   },
   methods: {
     fmtDay,
     dueText,
     toggleFav,
+    toast,
+    // starea pe scurt a unui document legat
+    miniStatus(x) {
+      if (x.mySign === 'pending') return { label: 'De semnat de dvs.', cls: 'amber solid' };
+      if (!x.signers.length) return null;
+      const left = x.signers.filter((s) => !s.signed_at).length;
+      return left ? { label: 'Semnare ' + (x.signers.length - left) + '/' + x.signers.length, cls: 'amber' } : { label: 'Semnat', cls: 'green' };
+    },
+    miniSigners(x) {
+      return x.signers.map((s) => s.name).join(', ');
+    },
+    async linkTo(other) {
+      const id = this.doc.id;
+      this.linking = null;
+      await run(async () => {
+        await api('/api/documents/' + id + '/link', { method: 'POST', body: { other: other.id } });
+        await loadDocs();
+      }, 'Documentele au fost legate.');
+    },
+    async unlink() {
+      const ok = await ask({
+        title: 'Scoateți documentul din pachet?',
+        message: '„' + this.doc.title + '” nu va mai apărea împreună cu documentele legate. Documentele, fișierele și semnăturile rămân neschimbate.',
+        okLabel: 'Scoate din pachet',
+      });
+      if (!ok) return;
+      await run(async () => {
+        await api('/api/documents/' + this.doc.id + '/link', { method: 'DELETE' });
+        await loadDocs();
+      }, 'Documentul a fost scos din pachet.');
+    },
     // butonul din dreptul fișierului: serverul decide oricum dreptul real la deschidere
     inEditor(f) {
       return !!store.me.office && OFFICE_VIEW.includes(extName(f.name));
@@ -1479,6 +1632,7 @@ const DocCard = {
           <span class="d-sub">
             <span v-if="doc.number" class="d-nr">nr. {{ doc.number }}</span>
             <span v-if="!doc.doc_date" class="d-kind">formular / model</span>
+            <span v-if="bundle.length && !nested" class="d-pack" :title="'Pachet: legat de ' + bundle.length + (bundle.length === 1 ? ' document' : ' documente')"><Icon name="link" />pachet · {{ bundle.length + 1 }}</span>
             <span v-if="doc.sign_until && doc.signers.some((s) => !s.signed_at)" class="d-due" :class="{ late: overdue }"><Icon name="clock" />{{ dueText(doc) }}</span>
             <template v-for="id in shownTags" :key="id"><span class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span></template>
             <span v-if="hiddenTags" class="chip more">+{{ hiddenTags }}</span>
@@ -1531,6 +1685,23 @@ const DocCard = {
           </section>
         </div>
 
+        <section v-if="bundle.length && !nested" class="dsec dbundle">
+          <h4><Icon name="link" />Documente legate <span class="pill">{{ bundle.length }}</span>
+            <a class="btn link sm push" :href="bundleZip" download><Icon name="download" />Descarcă pachetul</a>
+          </h4>
+          <ul class="bundle-list">
+            <li v-for="x in bundle" :key="x.id" :class="{ open: peek === x.id }">
+              <button type="button" class="bundle-row" :aria-expanded="peek === x.id ? 'true' : 'false'" @click="peek = peek === x.id ? null : x.id">
+                <Icon name="file" />
+                <span class="bundle-txt"><b>{{ x.title }}</b><span v-if="x.signers.length" class="muted small">Semnează: {{ miniSigners(x) }}</span></span>
+                <span v-if="miniStatus(x)" class="pill" :class="miniStatus(x).cls">{{ miniStatus(x).label }}</span>
+                <span class="d-chev"><Icon name="chevron" /></span>
+              </button>
+              <DocCard v-if="peek === x.id" :doc="x" start-open nested @edit="$emit('edit', $event)" />
+            </li>
+          </ul>
+        </section>
+
         <section v-if="doc.signers.length" class="dsec dsign" :class="{ done: !pending }">
           <h4><Icon name="pen" />Semnare <span class="pill" :class="pending ? 'amber' : 'green'">{{ doc.signers.length - pending }} din {{ doc.signers.length }}</span></h4>
           <ol class="stepper">
@@ -1559,6 +1730,11 @@ const DocCard = {
             <button type="button" class="btn sm fav-btn" :class="{ on: doc.fav }" :aria-pressed="doc.fav ? 'true' : 'false'" @click="toggleFav(doc)"><Icon name="star" />{{ doc.fav ? 'Favorit' : 'Adaugă la favorite' }}</button>
             <button v-if="signedPdfs.length" type="button" class="btn sm" @click="verifying = signedPdfs">Verifică semnăturile</button>
             <button v-if="doc.canEdit && pending && store.me.mailEnabled" type="button" class="btn sm" :disabled="reminding" @click="remind">Retrimite e-mailul</button>
+            <template v-if="doc.canEdit && !nested">
+              <button type="button" class="btn sm" @click="addingLinked = true" title="Un document nou, cu semnatarii lui, care apare împreună cu acesta"><Icon name="link" />Adaugă document legat</button>
+              <button type="button" class="btn sm ghost" @click="linking = { q: '', pick: null }">Leagă de un document existent</button>
+            </template>
+            <button v-if="doc.canEdit && doc.bundle_id" type="button" class="btn sm ghost" @click="unlink">Scoate din pachet</button>
           </div>
           <div class="dfoot-side">
             <button v-if="doc.unseen" type="button" class="btn sm" @click="markSeen">Marchează ca văzut</button>
@@ -1578,6 +1754,17 @@ const DocCard = {
       </Modal>
       <SignatureCheck v-if="verifying" :files="verifying" @close="verifying = null" />
       <FileVersions v-if="versionsOf" :file="versionsOf" @close="versionsOf = null" />
+      <DocForm v-if="addingLinked" :link-with="doc" @close="addingLinked = false" @saved="addingLinked = false" />
+      <Modal v-if="linking" wide title="Leagă de un document existent" ok-label="Leagă" @close="linking = null" @submit="linking.pick ? linkTo(linking.pick) : toast('Alegeți un document din listă.', true)">
+        <p class="dialog-msg">Alegeți documentul cu care „{{ doc.title }}” trebuie să apară împreună. Fiecare document își păstrează semnatarii și accesul.</p>
+        <input v-model="linking.q" class="mb10" placeholder="Caută după denumire sau număr…" autofocus @keydown.enter.prevent />
+        <div class="scroll link-pick" role="listbox" aria-label="Documente">
+          <button v-for="x in linkCandidates" :key="x.id" type="button" role="option" class="side-item" :class="{ on: linking.pick === x }" :aria-selected="linking.pick === x ? 'true' : 'false'" @click="linking.pick = x" @dblclick="linkTo(x)">
+            <span><b>{{ x.title }}</b> <span class="muted small">{{ x.doc_date ? fmtDay(x.doc_date) : 'fără dată' }}<template v-if="x.number"> · nr. {{ x.number }}</template><template v-if="x.bundle_id"> · în alt pachet</template></span></span>
+          </button>
+          <p v-if="!linkCandidates.length" class="muted small">Niciun document găsit (puteți lega doar documentele pe care le puteți modifica).</p>
+        </div>
+      </Modal>
     </article>`,
 };
 

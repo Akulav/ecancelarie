@@ -178,6 +178,9 @@ addColumn('document_signers', 'signed_by_name', 'TEXT');
 // termenul de semnare (AAAA-LL-ZZ) și ziua ultimei reamintiri automate trimise
 addColumn('documents', 'sign_until', "TEXT NOT NULL DEFAULT ''");
 addColumn('documents', 'sign_reminded', "TEXT NOT NULL DEFAULT ''");
+// pachet de documente legate (ex. o anexă semnată de alte persoane): același bundle_id = același pachet
+addColumn('documents', 'bundle_id', 'INTEGER');
+db.exec('CREATE INDEX IF NOT EXISTS idx_documents_bundle ON documents(bundle_id)');
 db.exec(`
 -- documentele marcate cu stea de fiecare utilizator
 CREATE TABLE IF NOT EXISTS document_favorites (

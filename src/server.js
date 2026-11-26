@@ -290,6 +290,8 @@ function readDoc(data, docId = null) {
     // semnatarii noi trebuie să aibă cont activ (altfel lanțul s-ar bloca); cei deja în lanț rămân
     signerIds: idList(data.signerIds).filter((uid) => signerOk.get(uid, docId ?? 0, uid)),
     removeFileIds: idList(data.removeFileIds),
+    // doar la adăugare: documentul intră în pachetul acestui document
+    link_with: idList([data.link_with])[0] || null,
   };
 }
 const signerOk = db.prepare(
@@ -433,14 +435,44 @@ async function notifySigners(req, docId, userIds, opts) {
 
 // Creează / modifică un document deja validat (readDoc), cu fișierele deja scrise pe disc. Folosite de
 // formularul din pagină și de asistenții AI (src/mcp.js); verificarea drepturilor rămâne la apelant.
+// --- pachete de documente legate ---
+// Documentele dintr-un pachet au același bundle_id (un număr propriu al pachetului). Fiecare
+// își păstrează propriii semnatari și propriul acces; legătura doar le arată împreună.
+// Documentul de care se leagă trebuie să fie vizibil și modificabil de utilizator.
+function bundleTarget(user, otherId) {
+  const o = accessibleDoc(user, otherId);
+  const row = o && db.prepare('SELECT id, title, created_by, bundle_id FROM documents WHERE id = ?').get(o.id);
+  if (!row || !canEdit(user, row)) throw fail(404, 'Documentul de care vreți să-l legați nu a fost găsit sau nu îl puteți modifica.');
+  return row;
+}
+// un pachet nou primește un număr nefolosit (nu id-ul unui document, care poate fi scos din pachet sau șters)
+function joinBundle(id, other) {
+  let bundle = other.bundle_id;
+  if (!bundle) {
+    bundle = db.prepare('SELECT COALESCE(MAX(bundle_id), 0) + 1 AS n FROM documents').get().n;
+    db.prepare('UPDATE documents SET bundle_id = ? WHERE id = ?').run(bundle, other.id);
+    other.bundle_id = bundle;
+  }
+  db.prepare('UPDATE documents SET bundle_id = ? WHERE id = ?').run(bundle, id);
+}
+// un pachet rămas cu un singur document nu mai este pachet
+function tidyBundle(bundle) {
+  if (!bundle) return;
+  const left = db.prepare('SELECT id FROM documents WHERE bundle_id = ?').all(bundle);
+  if (left.length === 1) db.prepare('UPDATE documents SET bundle_id = NULL WHERE id = ?').run(left[0].id);
+}
+
 async function createDocument(req, doc, saved) {
   let id;
+  let other = null;
   try {
+    if (doc.link_with) other = bundleTarget(req.user, doc.link_with);
     id = tx(() => {
       const r = db
         .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, sign_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, doc.sign_until, req.user.id);
       saveDocLinks(lastId(r), doc, saved);
+      if (other) joinBundle(lastId(r), other);
       return lastId(r);
     });
   } catch (e) {
@@ -448,7 +480,7 @@ async function createDocument(req, doc, saved) {
     throw e;
   }
   // după salvare fișierele aparțin documentului: o eroare la e-mail nu trebuie să le mai șteargă
-  audit(req, 'document adăugat', `#${id} ${doc.title}`);
+  audit(req, 'document adăugat', `#${id} ${doc.title}${other ? ` (legat de #${other.id} ${other.title})` : ''}`);
   return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
 }
 async function updateDocument(req, id, doc, saved) {
@@ -499,7 +531,7 @@ function listDocuments(user, onlyId = null) {
   const acc = accessClause(user);
   const rows = db
     .prepare(
-      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.review_until, d.sign_until, d.created_by, d.created_at,
+      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.review_until, d.sign_until, d.bundle_id, d.created_by, d.created_at,
               a.full_name AS author,
               EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen,
               EXISTS (SELECT 1 FROM document_favorites f WHERE f.document_id = d.id AND f.user_id = ?) AS fav
@@ -1085,6 +1117,35 @@ app.register(async (app) => {
     else db.prepare('INSERT OR IGNORE INTO document_favorites (user_id, document_id) VALUES (?, ?)').run(req.user.id, doc.id);
     return { ok: true };
   });
+  // legarea unui document existent de altul (intră în pachetul acestuia) și scoaterea din pachet
+  app.post('/api/documents/:id/link', { preHandler: requireEditor }, async (req) => {
+    const id = paramId(req);
+    const me = accessibleDoc(req.user, id) && db.prepare('SELECT id, title, created_by, bundle_id FROM documents WHERE id = ?').get(id);
+    if (!me || !canEdit(req.user, me)) throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți modifica.');
+    const otherId = idList([(req.body || {}).other])[0];
+    if (!otherId || otherId === id) throw fail(400, 'Alegeți documentul de care să fie legat.');
+    const other = bundleTarget(req.user, otherId);
+    if (me.bundle_id && me.bundle_id === other.bundle_id) return { ok: true };
+    tx(() => {
+      joinBundle(id, other);
+      // dacă documentul era deja într-un pachet, cele două pachete se unesc (nimic nu rămâne pe dinafară)
+      if (me.bundle_id) db.prepare('UPDATE documents SET bundle_id = ? WHERE bundle_id = ?').run(other.bundle_id, me.bundle_id);
+    });
+    audit(req, 'documente legate', `#${id} ${me.title} → #${other.id} ${other.title}`);
+    return { ok: true };
+  });
+  app.delete('/api/documents/:id/link', { preHandler: requireEditor }, async (req) => {
+    const id = paramId(req);
+    const me = accessibleDoc(req.user, id) && db.prepare('SELECT id, title, created_by, bundle_id FROM documents WHERE id = ?').get(id);
+    if (!me || !canEdit(req.user, me)) throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți modifica.');
+    if (!me.bundle_id) return { ok: true };
+    tx(() => {
+      db.prepare('UPDATE documents SET bundle_id = NULL WHERE id = ?').run(id);
+      tidyBundle(me.bundle_id);
+    });
+    audit(req, 'document scos din pachet', `#${id} ${me.title}`);
+    return { ok: true };
+  });
   app.post('/api/documents/seen-many', { preHandler: requireUser }, async (req) => {
     let n = 0;
     for (const id of idList((req.body || {}).ids)) {
@@ -1333,13 +1394,14 @@ app.register(async (app) => {
 
   app.delete('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
     const id = paramId(req);
-    const old = db.prepare('SELECT id, title, created_by FROM documents WHERE id = ?').get(id);
+    const old = db.prepare('SELECT id, title, created_by, bundle_id FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți șterge.');
     const signers = db.prepare('SELECT signed_at FROM document_signers WHERE document_id = ?').all(id);
     if (!canDelete(req.user, old, signers)) throw fail(403, 'Documentul are deja semnături; doar un administrator îl poate șterge.');
     audit(req, 'document șters', `#${id} ${old.title}`);
     const stored = db.prepare('SELECT id, stored FROM document_files WHERE document_id = ?').all(id).flatMap((f) => [f.stored, ...versionsStored(f.id)]);
     db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+    tidyBundle(old.bundle_id);
     removeStored(stored);
     return { ok: true };
   });

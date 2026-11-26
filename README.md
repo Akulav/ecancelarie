@@ -55,6 +55,11 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
   Cu un **înlocuitor** ales, ordinea nu se schimbă: înlocuitorul vede documentele și semnează în locul ei.
 - **Termen de semnare** (opțional): documentele cu termen depășit sunt marcate cu roșu, iar persoana aflată la rând
   primește o reamintire pe e-mail cu o zi înainte de termen și apoi zilnic (în zilele lucrătoare, 9–18).
+- **Documente legate (pachet)**: când fișierele care merg împreună se semnează de persoane diferite (ex. contractul
+  și anexa), bifați „Semnatari diferiți pe fișiere” la încărcare: fiecare fișier devine un document cu semnatarii
+  lui, iar documentele se semnează în paralel și apar împreună. Din document: „Adaugă document legat”, „Leagă de
+  un document existent”, „Scoate din pachet” și descărcarea întregului pachet (ZIP). Fiecare îl vede doar pe cele
+  la care are acces.
 - Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 
 </td>
