@@ -34,7 +34,7 @@ const sender = (s) => s.smtp_from || s.smtp_user || 'e-management@localhost';
 
 // Trimite fiecărui semnatar solicitarea de semnare. Întoarce cine a fost notificat și cine nu,
 // ca interfața să poată avertiza autorul; o eroare de e-mail nu anulează salvarea documentului.
-// `origin` este adresa de la care a venit cererea, folosită când „Adresa aplicației” nu este setată.
+// `origin` este adresa văzută în browserul unui administrator, folosită când „Adresa aplicației” nu este setată.
 // `reminder` = reamintirea automată când termenul de semnare se apropie sau a trecut.
 // Un utilizator cu `on_behalf` semnează ca înlocuitor al unei persoane absente.
 async function sendSignRequests(doc, users, origin, { reminder = false } = {}) {
@@ -63,7 +63,7 @@ async function sendSignRequests(doc, users, origin, { reminder = false } = {}) {
             due +
             (u.on_behalf ? `  Semnați în locul: ${u.on_behalf} (absent)\n` : '') +
             `\n` +
-            `Pași: deschideți ${url}/#notificari, descărcați versiunea curentă a documentului,\n` +
+            `Pași: deschideți ${url ? url + '/#notificari' : 'aplicația e-Management ANSC (secțiunea Notificări)'}, descărcați versiunea curentă a documentului,\n` +
             `semnați-o digital și încărcați fișierul semnat în aceeași înregistrare.\n\n` +
             `Acest mesaj a fost generat automat.`,
         });

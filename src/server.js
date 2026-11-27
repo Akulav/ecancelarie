@@ -178,9 +178,22 @@ async function requireUser(req, reply) {
   }
   if (user.must_change && !req.routeOptions.config.allowMustChange) throw fail(403, 'Schimbați mai întâi parola.');
   req.user = me;
-  lastOrigin = `${req.protocol}://${req.host}`;
+  if (me.role === 'admin') rememberOrigin(req);
 }
-let lastOrigin = '';
+
+// Adresa aplicației din linkurile e-mailurilor: „Adresa aplicației” din Setări sau, dacă lipsește, adresa văzută
+// ultima dată în browserul unui administrator (păstrată în baza de date, ca reamintirile automate să o aibă și
+// după o repornire). Antetul Host trimis de alți utilizatori nu se folosește: ar putea fi falsificat, iar
+// e-mailurile către colegi ar duce pe alt site.
+const HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
+let seenOrigin = db.prepare("SELECT value FROM settings WHERE key = 'seen_origin'").get()?.value || '';
+function rememberOrigin(req) {
+  if (mail.getSettings().app_url || !HOST_RE.test(String(req.host || ''))) return;
+  const o = `${req.protocol === 'https' ? 'https' : 'http'}://${req.host}`;
+  if (o === seenOrigin) return;
+  seenOrigin = o;
+  db.prepare("INSERT INTO settings (key, value) VALUES ('seen_origin', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(o);
+}
 async function requireAdmin(req, reply) {
   await requireUser(req, reply);
   if (req.user.role !== 'admin') throw fail(403, 'Acțiune permisă doar administratorilor.');
@@ -418,6 +431,7 @@ function saveDocLinks(id, doc, saved) {
   order.forEach((x, i) => (current.some((s) => s.user_id === x) ? moveSigner.run(i, id, x) : addSigner.run(id, x, i)));
 }
 
+// `req` rămâne în semnătură pentru apelanți; linkul din e-mail nu depinde de cererea curentă (vezi rememberOrigin).
 async function notifySigners(req, docId, userIds, opts) {
   userIds = userIds.filter(Boolean);
   if (!userIds.length) return null;
@@ -430,11 +444,9 @@ async function notifySigners(req, docId, userIds, opts) {
       return u && actor !== id ? { ...u, on_behalf: (q.get(id) || {}).full_name || '' } : u;
     })
     .filter(Boolean);
-  return mail.sendSignRequests(doc, users, req ? `${req.protocol}://${req.host}` : lastOrigin, opts);
+  return mail.sendSignRequests(doc, users, seenOrigin, opts);
 }
 
-// Creează / modifică un document deja validat (readDoc), cu fișierele deja scrise pe disc. Folosite de
-// formularul din pagină și de asistenții AI (src/mcp.js); verificarea drepturilor rămâne la apelant.
 // --- pachete de documente legate ---
 // Documentele dintr-un pachet au același bundle_id (un număr propriu al pachetului). Fiecare
 // își păstrează propriii semnatari și propriul acces; legătura doar le arată împreună.
@@ -462,6 +474,9 @@ function tidyBundle(bundle) {
   if (left.length === 1) db.prepare('UPDATE documents SET bundle_id = NULL WHERE id = ?').run(left[0].id);
 }
 
+// Creează / modifică un document deja validat (readDoc), cu fișierele deja scrise pe disc. Folosite de
+// formularul din pagină și de asistenții AI (src/mcp.js); verificarea drepturilor rămâne la apelant
+// (cu excepția documentului de care se leagă unul nou, verificat aici prin bundleTarget).
 async function createDocument(req, doc, saved) {
   let id;
   let other = null;
@@ -542,16 +557,21 @@ function listDocuments(user, onlyId = null) {
     .all(user.id, user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
   if (!rows.length) return [];
   const away = absentToday();
+  // pentru un singur document (asistenții AI) se citesc doar rândurile lui
+  const only = (col) => (onlyId ? ` WHERE ${col} = ?` : '');
+  const args = onlyId ? [onlyId] : [];
   const signers = byDocument(
-    db.prepare(
-'SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at, s.signed_by_name FROM document_signers s JOIN users u ON u.id = s.user_id ORDER BY s.position, s.user_id'
-    ).all(),
+    db
+      .prepare(`SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at, s.signed_by_name FROM document_signers s JOIN users u ON u.id = s.user_id${only('s.document_id')} ORDER BY s.position, s.user_id`)
+      .all(...args),
     (r) => ({ ...r, active: !!r.active, absent: away.get(r.id) || null })
   );
-  const tags = byDocument(db.prepare('SELECT document_id, tag_id FROM document_tags').all(), (r) => r.tag_id);
-  const units = byDocument(db.prepare('SELECT document_id, unit_id FROM document_units').all(), (r) => r.unit_id);
-  const users = byDocument(db.prepare('SELECT document_id, user_id FROM document_users').all(), (r) => r.user_id);
-  const files = byDocument(db.prepare('SELECT document_id, id, name, size, signed_by, signed_by_name, created_at, version, edited_by_name, edited_at FROM document_files ORDER BY id').all());
+  const tags = byDocument(db.prepare(`SELECT document_id, tag_id FROM document_tags${only('document_id')}`).all(...args), (r) => r.tag_id);
+  const units = byDocument(db.prepare(`SELECT document_id, unit_id FROM document_units${only('document_id')}`).all(...args), (r) => r.unit_id);
+  const users = byDocument(db.prepare(`SELECT document_id, user_id FROM document_users${only('document_id')}`).all(...args), (r) => r.user_id);
+  const files = byDocument(
+    db.prepare(`SELECT document_id, id, name, size, signed_by, signed_by_name, created_at, version, edited_by_name, edited_at FROM document_files${only('document_id')} ORDER BY id`).all(...args)
+  );
   // absent fără înlocuitor: nu este așteptat (trece la final)
   const skipped = (s) => s.absent && !s.absent.substitute_id;
   return rows.map(({ seen, fav, ...d }) => {
@@ -1709,7 +1729,12 @@ function remindDeadlines() {
     // doar în zilele lucrătoare, în timpul programului
     if (hour < 9 || hour >= 18 || now.getDay() === 0 || now.getDay() === 6) return;
     const today = localToday();
-    const due = db.prepare("SELECT id, title FROM documents WHERE sign_until <> '' AND sign_until <= ? AND sign_reminded <> ?").all(localDay(1), today);
+    const due = db
+      .prepare(
+        `SELECT d.id, d.title FROM documents d WHERE d.sign_until <> '' AND d.sign_until <= ? AND d.sign_reminded <> ?
+           AND EXISTS (SELECT 1 FROM document_signers s WHERE s.document_id = d.id AND s.signed_at IS NULL)`
+      )
+      .all(localDay(1), today);
     for (const d of due) {
       db.prepare('UPDATE documents SET sign_reminded = ? WHERE id = ?').run(today, d.id);
       const turn = currentSigner(d.id);

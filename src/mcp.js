@@ -58,8 +58,10 @@ function zipEntries(buf) {
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 const decodeXml = (s) =>
   s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (m, e) =>
-    e[0] === '#' ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENTITIES[e.toLowerCase()]
+    e[0] === '#' ? codePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENTITIES[e.toLowerCase()]
   );
+// caracterele imposibile (peste U+10FFFF) devin „�” în loc să arunce o eroare
+const codePoint = (n) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '\ufffd');
 const stripXml = (s) => decodeXml(s.replace(/<[^>]+>/g, ''));
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
 

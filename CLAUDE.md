@@ -27,6 +27,9 @@ npm start          # http://localhost:3080 (HOST defaults to 0.0.0.0)
   the token's owner; tools must reuse `accessClause` / `listDocuments` / `readDoc` / `createDocument` / `updateDocument`)
 - `public/` — Vue 3 frontend served as static files (`app.js`, `style.css`, `index.html`); Vue is served from
   `node_modules` at `/vendor/vue.js`
+- Themes: colors in `style.css` are variables (`--xb-…` backgrounds/borders, `--xt-…` text) with light values in
+  `:root` and dark values under `[data-theme="dark"]` and `prefers-color-scheme: dark`. New colors need both;
+  `public/theme.js` applies the user's choice before first paint.
 
 ## Security rules (keep them)
 

@@ -35,6 +35,8 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
 - **Acasă**: pagina de start arată ce aveți de semnat (cu termenele), documentele dvs. aflate la semnare,
   favoritele, documentele noi, avizările deschise și colegii absenți azi.
 - **Favorite**: steaua dintr-un document îl păstrează la îndemână (preferință personală, fiecare are ale lui).
+- **Temă luminoasă sau întunecată**: din meniul contului (implicit, după setarea sistemului); alegerea se păstrează
+  în browser.
 - **Selecție multiplă**: „Selectează” în pagina Documente permite descărcarea mai multor documente într-o singură
   arhivă ZIP (un dosar pentru fiecare document) sau marcarea lor ca văzute.
 - Documentele **fără dată** (formulare, modele) au propriul grup și propria opțiune în filtrul după an.
@@ -57,8 +59,8 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
   primește o reamintire pe e-mail cu o zi înainte de termen și apoi zilnic (în zilele lucrătoare, 9–18).
 - **Documente legate (pachet)**: când fișierele care merg împreună se semnează de persoane diferite (ex. contractul
   și anexa), bifați „Semnatari diferiți pe fișiere” la încărcare: fiecare fișier devine un document cu semnatarii
-  lui, iar documentele se semnează în paralel și apar împreună. Din document: „Adaugă document legat”, „Leagă de
-  un document existent”, „Scoate din pachet” și descărcarea întregului pachet (ZIP). Fiecare îl vede doar pe cele
+  lui, iar documentele se semnează în paralel și apar împreună. Din document: „Adaugă document legat”, „Leagă de alt document”, „Scoate din pachet”
+  și descărcarea întregului pachet (ZIP). Fiecare îl vede doar pe cele
   la care are acces.
 - Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 

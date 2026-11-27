@@ -354,6 +354,9 @@ const ICONS = {
   swap: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
   shield: '<path d="M12 3 4.5 6v6c0 4.4 3.2 7.8 7.5 9 4.3-1.2 7.5-4.6 7.5-9V6z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4L12 5.6"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
 };
 const Icon = {
@@ -1732,7 +1735,7 @@ const DocCard = {
             <button v-if="doc.canEdit && pending && store.me.mailEnabled" type="button" class="btn sm" :disabled="reminding" @click="remind">Retrimite e-mailul</button>
             <template v-if="doc.canEdit && !nested">
               <button type="button" class="btn sm" @click="addingLinked = true" title="Un document nou, cu semnatarii lui, care apare împreună cu acesta"><Icon name="link" />Adaugă document legat</button>
-              <button type="button" class="btn sm ghost" @click="linking = { q: '', pick: null }">Leagă de un document existent</button>
+              <button type="button" class="btn sm ghost" @click="linking = { q: '', pick: null }" title="Leagă acest document de un document existent">Leagă de alt document</button>
             </template>
             <button v-if="doc.canEdit && doc.bundle_id" type="button" class="btn sm ghost" @click="unlink">Scoate din pachet</button>
           </div>
@@ -3224,6 +3227,7 @@ const SettingsView = {
             <label class="field"><span>Expeditor</span><input v-model="f.smtp_from" maxlength="200" placeholder="e-Management ANSC <notificari@ansc.md>" /></label>
             <label class="field"><span>Adresa aplicației (linkuri în e-mailuri)</span><input v-model="f.app_url" maxlength="200" placeholder="ex. https://documente.ansc.md" /></label>
           </div>
+          <p v-if="!f.app_url" class="muted small hint">Recomandat: completați adresa. Până atunci, e-mailurile folosesc adresa la care un administrator a deschis ultima dată aplicația.</p>
           <div class="panel-foot">
             <button class="btn primary" :disabled="busy">Salvează setările</button>
           </div>
@@ -3635,10 +3639,33 @@ const Watermark = {
   template: /*html*/ `<div class="watermark" aria-hidden="true" :style="style"></div>`,
 };
 
+// Tema: „auto” urmează sistemul; alegerea se păstrează în browser (public/theme.js o aplică la încărcare).
+function readTheme() {
+  try {
+    const t = localStorage.getItem('ansc.theme');
+    return t === 'light' || t === 'dark' ? t : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+function applyTheme(t) {
+  try {
+    if (t === 'auto') localStorage.removeItem('ansc.theme');
+    else localStorage.setItem('ansc.theme', t);
+  } catch {}
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+}
+const THEMES = [
+  ['auto', 'Automată', 'monitor'],
+  ['light', 'Luminoasă', 'sun'],
+  ['dark', 'Întunecată', 'moon'],
+];
+
 // ---------- aplicația ----------
 const App = {
   components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, HomeView, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor, AiTokens, Watermark, Icon },
-  data: () => ({ pass: null, passBusy: false, bump: false, ai: false, menu: false }),
+  data: () => ({ pass: null, passBusy: false, bump: false, ai: false, menu: false, theme: readTheme(), themes: THEMES }),
   // meniul contului se închide la un clic în afara lui sau cu Escape
   mounted() {
     this.closeMenu = (e) => {
@@ -3684,6 +3711,10 @@ const App = {
   methods: {
     initials,
     avatarStyle,
+    setTheme(t) {
+      this.theme = t;
+      applyTheme(t);
+    },
     pick(action) {
       this.menu = false;
       if (action === 'ai') this.ai = true;
@@ -3747,6 +3778,12 @@ const App = {
                   <div class="um-head"><b>{{ store.me.full_name }}</b><span>{{ store.me.position || roleName }}</span></div>
                   <button type="button" role="menuitem" @click="pick('ai')"><Icon name="review" />Asistent AI (MCP)</button>
                   <button type="button" role="menuitem" @click="pick('pass')"><Icon name="lock" />Schimbă parola</button>
+                  <div class="um-theme" role="group" aria-label="Tema de culori">
+                    <span>Temă</span>
+                    <div class="seg">
+                      <button v-for="t in themes" :key="t[0]" type="button" role="menuitemradio" :aria-checked="theme === t[0] ? 'true' : 'false'" :class="{ on: theme === t[0] }" :title="'Tema ' + t[1].toLowerCase()" @click="setTheme(t[0])"><Icon :name="t[2]" /><span>{{ t[1] }}</span></button>
+                    </div>
+                  </div>
                   <button type="button" role="menuitem" class="um-out" @click="pick('out')"><Icon name="left" />Ieșire</button>
                 </div>
               </div>
